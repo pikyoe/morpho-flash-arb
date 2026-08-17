@@ -1,0 +1,13 @@
+# Foundry
+out/
+cache/
+broadcast/
+lib/
+
+# Env
+.env
+
+# Node
+bot/node_modules/
+bot/.env
+bot/dist/
