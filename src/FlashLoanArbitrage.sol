@@ -10,60 +10,39 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {IMorpho, IMorphoFlashLoanCallback} from "./interfaces/IMorpho.sol";
 
 /// @title FlashLoanArbitrage
-/// @notice Flash-borrows an asset from Morpho Blue (fee-free flash loans) on Base,
-///         executes an arbitrary, off-chain-computed sequence of calls (a DEX leg
-///         such as Aerodrome/Uniswap V3, and a lending-protocol leg such as a
-///         Moonwell liquidation) to capture a price/rate spread, repays
-///         the loan, and sweeps any profit to the owner.
-/// @dev This contract is deliberately generic: it does not hardcode a single DEX or
-///      lending protocol. Profitable routes must be found off-chain (see the `bot/`
-///      script) because scanning prices on-chain is far too gas-expensive to be
-///      profitable itself. The contract's only on-chain responsibilities are:
-///        1) verify the caller/flow is legitimate (only Morpho, only mid flash loan),
-///        2) execute the exact calls the owner asked for,
-///        3) enforce a minimum-profit check before repaying,
-///        4) repay the loan and forward profit to the owner.
-/// @dev Security enhancements:
-///      - Role-based access control (ADMIN, OPERATOR, PAUSER)
-///      - Pausable functionality for emergency stops
-///      - Target contract whitelisting
-///      - Enhanced input validation
+/// @notice Flash-borrows an asset from Morpho Blue and executes a pre-approved
+///         sequence of DEX/lending calls, enforcing profit against the contract's
+///         pre-loan balance so pre-existing funds can never be counted as arbitrage profit.
 contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    /// @dev Role identifiers for access control
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
     bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
 
-    /// @notice A single call to make as part of an arbitrage route
-    ///         (e.g. "swap on Aerodrome" or "Moonwell liquidateBorrow").
     struct Call {
         address target;
         uint256 value;
         bytes data;
     }
 
-    /// @notice The Morpho Blue singleton this contract borrows from.
     IMorpho public immutable morpho;
-
-    /// @dev Set to true only while a flash loan we initiated is in flight,
-    ///      so the callback can't be triggered by an unrelated/malicious flash loan.
     bool private flashLoanInProgress;
 
-    /// @notice Whitelisted target contracts for arbitrage calls
+    /// @notice Legacy target-level whitelist, retained for administration visibility.
     mapping(address => bool) public isTargetWhitelisted;
 
-    /// @notice Maximum number of calls allowed in a single arbitrage
-    uint256 public constant MAX_CALLS = 20;
+    /// @notice Exact target + function-selector allowlist for executable calls.
+    mapping(address => mapping(bytes4 => bool)) public isCallWhitelisted;
 
-    /// @notice Minimum flash loan amount (to prevent dust attacks)
-    uint256 public constant MIN_FLASH_LOAN_SIZE = 1e6; // 1 unit of most tokens
+    uint256 public constant MAX_CALLS = 20;
+    uint256 public constant MIN_FLASH_LOAN_SIZE = 1e6;
 
     event ArbitrageExecuted(address indexed asset, uint256 amountBorrowed, uint256 profit);
     event ProfitWithdrawn(address indexed asset, address indexed to, uint256 amount);
     event ETHWithdrawn(address indexed to, uint256 amount);
     event TargetWhitelisted(address indexed target, bool whitelisted);
+    event CallSelectorWhitelisted(address indexed target, bytes4 indexed selector, bool whitelisted);
     event ContractPaused(address indexed pauser);
     event ContractUnpaused(address indexed admin);
 
@@ -72,6 +51,7 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     error InsufficientProfit(uint256 required, uint256 actual);
     error CallFailed(uint256 index, bytes returnData);
     error InvalidTarget(address target);
+    error InvalidSelector(address target, bytes4 selector);
     error InvalidAmount(uint256 amount);
     error InvalidCallsLength(uint256 length);
     error InvalidMinProfit(uint256 minProfit);
@@ -80,94 +60,82 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     constructor(address morphoAddress, address initialAdmin) {
         if (morphoAddress == address(0)) revert ZeroAddress("morphoAddress");
         if (initialAdmin == address(0)) revert ZeroAddress("initialAdmin");
-        
+
         morpho = IMorpho(morphoAddress);
-        
-        // Setup initial roles
+
         _grantRole(DEFAULT_ADMIN_ROLE, initialAdmin);
         _grantRole(ADMIN_ROLE, initialAdmin);
         _grantRole(OPERATOR_ROLE, initialAdmin);
         _grantRole(PAUSER_ROLE, initialAdmin);
     }
 
-    /// @notice Kicks off an arbitrage: flash-borrows `amount` of `asset` from Morpho,
-    ///         then executes `calls` (built off-chain), then requires the resulting
-    ///         balance of `asset` to cover the loan plus at least `minProfit`.
-    /// @param asset The token to flash-borrow (and the token profit is measured in).
-    /// @param amount The amount to flash-borrow.
-    /// @param calls The sequence of calls to execute inside the callback
-    ///        (e.g. approve + swap on a DEX, then interact with a lending protocol).
-    /// @param minProfit The minimum acceptable profit in `asset`, after repaying the
-    ///        loan. Reverts if not met, so the whole arbitrage (and the flash loan) is
-    ///        atomically undone — you never end up "stuck" mid-arbitrage.
     function executeArbitrage(address asset, uint256 amount, Call[] calldata calls, uint256 minProfit)
         external
         onlyRole(OPERATOR_ROLE)
         whenNotPaused
         nonReentrant
     {
-        // Input validation
         if (asset == address(0)) revert ZeroAddress("asset");
         if (amount < MIN_FLASH_LOAN_SIZE) revert InvalidAmount(amount);
         if (calls.length == 0 || calls.length > MAX_CALLS) revert InvalidCallsLength(calls.length);
         if (minProfit == 0) revert InvalidMinProfit(minProfit);
-        
-        // Validate all call targets are whitelisted
+
         for (uint256 i = 0; i < calls.length; i++) {
+            bytes4 selector = _selector(calls[i].data);
             if (!isTargetWhitelisted[calls[i].target]) {
                 revert InvalidTarget(calls[i].target);
             }
+            if (!isCallWhitelisted[calls[i].target][selector]) {
+                revert InvalidSelector(calls[i].target, selector);
+            }
         }
-        
-        bytes memory data = abi.encode(asset, calls, minProfit, msg.sender);
+
+        // Snapshot the balance before the flash loan. Only balance gained during this
+        // invocation can satisfy the profit requirement.
+        uint256 balanceBefore = IERC20(asset).balanceOf(address(this));
+        bytes memory data = abi.encode(asset, calls, minProfit, msg.sender, balanceBefore);
+
         flashLoanInProgress = true;
         morpho.flashLoan(asset, amount, data);
         flashLoanInProgress = false;
     }
 
-    /// @inheritdoc IMorphoFlashLoanCallback
-    /// @dev Called by Morpho mid-`flashLoan`. At this point the contract already
-    ///      holds `assets` of the flash-borrowed token.
-    ///      NOTE: This callback does NOT use nonReentrant because it is called
-    ///      from within executeArbitrage (which has nonReentrant). Adding it here
-    ///      would deadlock. Security is ensured by: (1) msg.sender == morpho,
-    ///      (2) flashLoanInProgress flag, (3) profit check at the end.
     function onMorphoFlashLoan(uint256 assets, bytes calldata data) external override {
         if (msg.sender != address(morpho)) revert NotMorpho();
         if (!flashLoanInProgress) revert FlashLoanNotInProgress();
 
-        (address asset, Call[] memory calls, uint256 minProfit, address initiator) =
-            abi.decode(data, (address, Call[], uint256, address));
+        (address asset, Call[] memory calls, uint256 minProfit, address initiator, uint256 balanceBefore) =
+            abi.decode(data, (address, Call[], uint256, address, uint256));
 
-        // Execute the off-chain-computed route (DEX swap(s), lending-protocol call(s), etc).
         for (uint256 i = 0; i < calls.length; i++) {
+            bytes4 selector = _selector(calls[i].data);
+            // Re-check inside the callback so the exact execution path is protected even
+            // if this function is ever refactored to receive callback data from elsewhere.
+            if (!isTargetWhitelisted[calls[i].target]) {
+                revert InvalidTarget(calls[i].target);
+            }
+            if (!isCallWhitelisted[calls[i].target][selector]) {
+                revert InvalidSelector(calls[i].target, selector);
+            }
+
             (bool success, bytes memory ret) = calls[i].target.call{value: calls[i].value}(calls[i].data);
             if (!success) revert CallFailed(i, ret);
         }
 
-        uint256 balance = IERC20(asset).balanceOf(address(this));
-        uint256 owed = assets;
-        if (balance <= owed) {
-            revert InsufficientProfit(owed + minProfit, balance);
+        uint256 balanceAfter = IERC20(asset).balanceOf(address(this));
+        uint256 requiredBalance = balanceBefore + assets + minProfit;
+        if (balanceAfter < requiredBalance) {
+            revert InsufficientProfit(requiredBalance, balanceAfter);
         }
 
-        uint256 profit = balance - owed;
-        if (profit < minProfit) {
-            revert InsufficientProfit(owed + minProfit, balance);
-        }
+        uint256 profit = balanceAfter - balanceBefore - assets;
 
-        // Repay the flash loan
-        IERC20(asset).forceApprove(address(morpho), owed);
-
-        // Sweep profit to initiator
-        if (profit > 0) {
-            IERC20(asset).safeTransfer(initiator, profit);
-        }
+        IERC20(asset).forceApprove(address(morpho), assets);
+        IERC20(asset).safeTransfer(initiator, profit);
 
         emit ArbitrageExecuted(asset, assets, profit);
     }
 
-    /// @notice Rescue any tokens that end up stuck in this contract.
     function withdrawToken(address token, address to, uint256 amount) external onlyRole(ADMIN_ROLE) nonReentrant {
         if (token == address(0)) revert ZeroAddress("token");
         if (to == address(0)) revert ZeroAddress("to");
@@ -175,7 +143,6 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
         emit ProfitWithdrawn(token, to, amount);
     }
 
-    /// @notice Rescue any native ETH stuck in this contract.
     function withdrawETH(address payable to, uint256 amount) external onlyRole(ADMIN_ROLE) nonReentrant {
         if (to == address(0)) revert ZeroAddress("to");
         (bool success,) = to.call{value: amount}("");
@@ -183,22 +150,17 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
         emit ETHWithdrawn(to, amount);
     }
 
-    // --- Whitelist Management ---
-
-    /// @notice Add a target contract to the whitelist
     function addTargetToWhitelist(address target) external onlyRole(ADMIN_ROLE) {
         if (target == address(0)) revert ZeroAddress("target");
         isTargetWhitelisted[target] = true;
         emit TargetWhitelisted(target, true);
     }
 
-    /// @notice Remove a target contract from the whitelist
     function removeTargetFromWhitelist(address target) external onlyRole(ADMIN_ROLE) {
         isTargetWhitelisted[target] = false;
         emit TargetWhitelisted(target, false);
     }
 
-    /// @notice Batch add targets to whitelist
     function batchAddTargetsToWhitelist(address[] calldata targets) external onlyRole(ADMIN_ROLE) {
         for (uint256 i = 0; i < targets.length; i++) {
             if (targets[i] != address(0)) {
@@ -208,20 +170,44 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
         }
     }
 
-    // --- Emergency Functions ---
+    /// @notice Allow an exact function selector on a whitelisted target.
+    function addCallSelectorToWhitelist(address target, bytes4 selector) external onlyRole(ADMIN_ROLE) {
+        if (target == address(0)) revert ZeroAddress("target");
+        if (!isTargetWhitelisted[target]) revert InvalidTarget(target);
+        isCallWhitelisted[target][selector] = true;
+        emit CallSelectorWhitelisted(target, selector, true);
+    }
 
-    /// @notice Pause the contract - emergency stop
+    function removeCallSelectorFromWhitelist(address target, bytes4 selector) external onlyRole(ADMIN_ROLE) {
+        isCallWhitelisted[target][selector] = false;
+        emit CallSelectorWhitelisted(target, selector, false);
+    }
+
+    function batchAddCallSelectorsToWhitelist(address target, bytes4[] calldata selectors) external onlyRole(ADMIN_ROLE) {
+        if (target == address(0)) revert ZeroAddress("target");
+        if (!isTargetWhitelisted[target]) revert InvalidTarget(target);
+        for (uint256 i = 0; i < selectors.length; i++) {
+            isCallWhitelisted[target][selectors[i]] = true;
+            emit CallSelectorWhitelisted(target, selectors[i], true);
+        }
+    }
+
     function pause() external onlyRole(PAUSER_ROLE) {
         _pause();
         emit ContractPaused(msg.sender);
     }
 
-    /// @notice Unpause the contract
     function unpause() external onlyRole(ADMIN_ROLE) {
         _unpause();
         emit ContractUnpaused(msg.sender);
     }
 
-    /// @dev Allow the contract to receive ETH (e.g. if a route unwraps WETH).
+    function _selector(bytes memory data) internal pure returns (bytes4 selector) {
+        if (data.length < 4) return bytes4(0);
+        assembly {
+            selector := mload(add(data, 32))
+        }
+    }
+
     receive() external payable {}
 }
