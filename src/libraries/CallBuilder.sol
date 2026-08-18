@@ -6,6 +6,7 @@ import {IAerodromeRouter} from "../interfaces/IAerodromeRouter.sol";
 import {IMoonwellMarket} from "../interfaces/IMoonwellMarket.sol";
 import {IMoonwellOevWrapper} from "../interfaces/IMoonwellOevWrapper.sol";
 import {FlashLoanArbitrage} from "../FlashLoanArbitrage.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 library CallBuilder {
     function approve(address token, address spender, uint256 amount) internal pure returns (FlashLoanArbitrage.Call memory) {
@@ -59,11 +60,11 @@ library CallBuilder {
     ) internal pure returns (uint256 liquidatorUnderlying) {
         require(priceCollateral != 0 && exchangeRateCollateral != 0, "zero price/rate");
         require(protocolSeizeShareMantissa <= 1e18, "invalid seize share");
-        // Divide before multiplying where possible and use checked Solidity arithmetic.
-        uint256 valueWithIncentive = (repayAmount * priceBorrowed) / priceCollateral;
-        valueWithIncentive = (valueWithIncentive * liquidationIncentiveMantissa) / 1e18;
-        uint256 grossSeizeTokens = (valueWithIncentive * 1e18) / exchangeRateCollateral;
-        uint256 liquidatorSeizeTokens = (grossSeizeTokens * (1e18 - protocolSeizeShareMantissa)) / 1e18;
-        liquidatorUnderlying = (liquidatorSeizeTokens * exchangeRateCollateral) / 1e18;
+
+        uint256 debtValue = Math.mulDiv(repayAmount, priceBorrowed, priceCollateral);
+        uint256 valueWithIncentive = Math.mulDiv(debtValue, liquidationIncentiveMantissa, 1e18);
+        uint256 grossSeizeTokens = Math.mulDiv(valueWithIncentive, 1e18, exchangeRateCollateral);
+        uint256 liquidatorSeizeTokens = Math.mulDiv(grossSeizeTokens, 1e18 - protocolSeizeShareMantissa, 1e18);
+        liquidatorUnderlying = Math.mulDiv(liquidatorSeizeTokens, exchangeRateCollateral, 1e18);
     }
 }
