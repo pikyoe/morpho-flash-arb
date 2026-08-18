@@ -30,7 +30,7 @@ contract CallBuilderTest is Test {
         assertEq(call.value, 0);
 
         // Decode and verify
-        (address approved, uint256 amount) = abi.decode(call.data, (address, uint256));
+        (address approved, uint256 amount) = abi.decode(call.data[4:], (address, uint256));
         assertEq(approved, spender);
         assertEq(amount, 1 ether);
     }
@@ -74,7 +74,7 @@ contract CallBuilderTest is Test {
 
         // Decode
         (address decodedBorrower, uint256 decodedAmount, address decodedCollateral) =
-            abi.decode(call.data, (address, uint256, address));
+            abi.decode(call.data[4:], (address, uint256, address));
 
         assertEq(decodedBorrower, borrower);
         assertEq(decodedAmount, repayAmount);
@@ -137,7 +137,7 @@ contract CallBuilderTest is Test {
         assertEq(call.value, 0);
         assertTrue(call.data.length > 0);
 
-        (uint256 decodedTokens) = abi.decode(call.data, (uint256));
+        (uint256 decodedTokens) = abi.decode(call.data[4:], (uint256));
         assertEq(decodedTokens, redeemTokens);
     }
 
