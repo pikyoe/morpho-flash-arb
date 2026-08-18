@@ -24,17 +24,17 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     bool private flashLoanInProgress;
     mapping(address => bool) public isTargetWhitelisted;
     mapping(address => mapping(bytes4 => bool)) public isCallWhitelisted;
+    mapping(address => uint256) public minFlashLoanSize;
 
-    // Minimum is intentionally asset-agnostic because the contract does not store token decimals.
-    // Operators must enforce economically meaningful per-asset minimums off-chain.
     uint256 public constant MAX_CALLS = 20;
-    uint256 public constant MIN_FLASH_LOAN_SIZE = 1e6;
+    uint256 public constant DEFAULT_MIN_FLASH_LOAN_SIZE = 1e6;
 
     event ArbitrageExecuted(address indexed asset, uint256 amountBorrowed, uint256 profit);
     event ProfitWithdrawn(address indexed asset, address indexed to, uint256 amount);
     event ETHWithdrawn(address indexed to, uint256 amount);
     event TargetWhitelisted(address indexed target, bool whitelisted);
     event CallSelectorWhitelisted(address indexed target, bytes4 indexed selector, bool whitelisted);
+    event MinimumFlashLoanSizeUpdated(address indexed asset, uint256 minimumAmount);
     event ContractPaused(address indexed pauser);
     event ContractUnpaused(address indexed admin);
 
@@ -59,7 +59,9 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
         external onlyRole(OPERATOR_ROLE) whenNotPaused nonReentrant
     {
         if (asset == address(0)) revert ZeroAddress("asset");
-        if (amount < MIN_FLASH_LOAN_SIZE) revert InvalidAmount(amount);
+        uint256 minimum = minFlashLoanSize[asset];
+        if (minimum == 0) minimum = DEFAULT_MIN_FLASH_LOAN_SIZE;
+        if (amount < minimum) revert InvalidAmount(amount);
         if (calls.length == 0 || calls.length > MAX_CALLS) revert InvalidCallsLength(calls.length);
         if (minProfit == 0) revert InvalidMinProfit(minProfit);
         for (uint256 i; i < calls.length; i++) _validateCall(calls[i].target, calls[i].data);
@@ -68,6 +70,13 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
         flashLoanInProgress = true;
         morpho.flashLoan(asset, amount, data);
         flashLoanInProgress = false;
+    }
+
+    function setMinimumFlashLoanSize(address asset, uint256 minimumAmount) external onlyRole(ADMIN_ROLE) {
+        if (asset == address(0)) revert ZeroAddress("asset");
+        if (minimumAmount == 0) revert InvalidAmount(minimumAmount);
+        minFlashLoanSize[asset] = minimumAmount;
+        emit MinimumFlashLoanSizeUpdated(asset, minimumAmount);
     }
 
     function onMorphoFlashLoan(uint256 assets, bytes calldata data) external override {
@@ -127,7 +136,6 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
         bytes4 selector = _selector(data);
         if (!isTargetWhitelisted[target]) revert InvalidTarget(target);
         if (!isCallWhitelisted[target][selector]) revert InvalidSelector(target, selector);
-
         if (selector == IERC20.approve.selector) {
             if (data.length != 68) revert InvalidSelector(target, selector);
             (address spender,) = abi.decode(_withoutSelector(data), (address, uint256));
