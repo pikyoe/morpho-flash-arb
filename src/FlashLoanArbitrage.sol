@@ -65,6 +65,7 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     event TargetWhitelisted(address indexed target, bool whitelisted);
     event ContractPaused(address indexed pauser);
     event ContractUnpaused(address indexed admin);
+    event ETHWithdrawn(address indexed to, uint256 amount);
 
     error NotMorpho();
     error FlashLoanNotInProgress();
@@ -127,7 +128,7 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     /// @inheritdoc IMorphoFlashLoanCallback
     /// @dev Called by Morpho mid-`flashLoan`. At this point the contract already
     ///      holds `assets` of the flash-borrowed token.
-    function onMorphoFlashLoan(uint256 assets, bytes calldata data) external override {
+    function onMorphoFlashLoan(uint256 assets, bytes calldata data) external override nonReentrant {
         if (msg.sender != address(morpho)) revert NotMorpho();
         if (!flashLoanInProgress) revert FlashLoanNotInProgress();
 
@@ -145,11 +146,14 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
         // `assets` explicitly (rather than assuming 0 fee) to stay correct even if
         // that ever changes upstream.
         uint256 owed = assets;
-        if (balance < owed + minProfit) {
+        if (balance <= owed) {
             revert InsufficientProfit(owed + minProfit, balance);
         }
 
         uint256 profit = balance - owed;
+        if (profit < minProfit) {
+            revert InsufficientProfit(owed + minProfit, balance);
+        }
 
         // Repay the flash loan: Morpho pulls `assets` back via transferFrom-style
         // accounting, so we approve it directly.
@@ -177,6 +181,7 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
         if (to == address(0)) revert ZeroAddress("to");
         (bool success,) = to.call{value: amount}("");
         require(success, "ETH transfer failed");
+        emit ETHWithdrawn(to, amount);
     }
 
     // --- Whitelist Management ---
