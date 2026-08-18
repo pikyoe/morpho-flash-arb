@@ -83,6 +83,7 @@ contract SetupLiquidatablePosition is Script, StdCheats {
         MockPriceFeed mock = new MockPriceFeed(crashedPrice);
         vm.etch(wethFeed, address(mock).code);
         // casting to uint256 is safe: int256 value is always non-negative here (price * percentage / 10000)
+        // forge-lint: disable-next-line(unsafe-typecast)
         vm.store(wethFeed, bytes32(uint256(0)), bytes32(uint256(crashedPrice)));
 
         uint256 newPrice = oracle.getAssetPrice(BaseAddresses.WETH);
