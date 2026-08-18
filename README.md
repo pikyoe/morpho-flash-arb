@@ -8,10 +8,6 @@ liquidator share of the 10% liquidation incentive) and sell the seized
 collateral on **Aerodrome** (Base's native DEX) or **Uniswap V3**, all
 atomically inside one flash-borrowed transaction.
 
-> Aave V3 liquidation remains supported: the contract is deliberately generic
-> and executes whatever whitelisted route the bot builds — switching back to
-> Aave is just a different `Call[]` (see [Adapting the strategy](#adapting-the-strategy)).
-
 > **This is a starting point, not a plug-and-play money printer.** Flash-loan
 > arbitrage is highly competitive (MEV searchers, other bots) and mistakes
 > with real funds are irreversible. Read [Risks & limitations](#risks--limitations)
@@ -99,7 +95,6 @@ src/
     IMorpho.sol                 # Morpho Blue flashLoan + callback interface
     IAerodromeRouter.sol        # Aerodrome (Base native DEX) router
     IUniswapV3Router.sol        # Uniswap V3 SwapRouter02 (alternate DEX leg)
-    IAaveV3Pool.sol             # Aave V3 Pool: supply/withdraw/liquidationCall (optional leg)
     IMoonwellMarket.sol         # Moonwell mToken: liquidateBorrow/redeem/exchangeRate
     IMoonwellComptroller.sol    # Moonwell Comptroller: health + liquidation params
     IMoonwellOevWrapper.sol     # Moonwell ChainlinkOEVWrapper: updatePriceEarlyAndLiquidate
@@ -386,10 +381,9 @@ That means you can repurpose it for other routes without touching Solidity:
 - **DEX vs. DEX price arbitrage**: swap on Aerodrome, swap back on Uniswap V3
   (or vice versa) — see `CallBuilder.aerodromeSwap` and adapt for
   `IUniswapV3Router.exactInputSingle`.
-- **Back to Aave V3 (or another Compound fork)**: the Aave leg still ships
-  (`CallBuilder.aaveLiquidationCall` + `IAaveV3Pool`); any other
-  Compound-compatible market (Morpho Blue, Compound V3) is a new interface +
-  `CallBuilder` helper following the same pattern as `IMoonwellMarket.sol`.
+- **Other Compound forks or lending protocols**: add a new interface +
+  `CallBuilder` helper following the same pattern as `IMoonwellMarket.sol`
+  (e.g. Morpho Blue, Compound V3, or re-adding Aave V3).
 - **Multi-hop routes**: just add more entries to the `Call[]` array — they
   execute in order.
 

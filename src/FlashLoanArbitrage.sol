@@ -13,7 +13,7 @@ import {IMorpho, IMorphoFlashLoanCallback} from "./interfaces/IMorpho.sol";
 /// @notice Flash-borrows an asset from Morpho Blue (fee-free flash loans) on Base,
 ///         executes an arbitrary, off-chain-computed sequence of calls (a DEX leg
 ///         such as Aerodrome/Uniswap V3, and a lending-protocol leg such as a
-///         Moonwell or Aave V3 liquidation) to capture a price/rate spread, repays
+///         Moonwell liquidation) to capture a price/rate spread, repays
 ///         the loan, and sweeps any profit to the owner.
 /// @dev This contract is deliberately generic: it does not hardcode a single DEX or
 ///      lending protocol. Profitable routes must be found off-chain (see the `bot/`

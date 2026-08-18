@@ -50,7 +50,7 @@ To prevent arbitrary contract calls, the contract implements a whitelist system:
 - Prevents calls to malicious contracts
 
 #### Default Whitelisted Contracts
-- Aave V3 Pool
+- Moonwell mToken markets (mUSDC, mWETH, etc.)
 - Aerodrome Router
 - Uniswap V3 SwapRouter02
 - WETH
@@ -223,7 +223,7 @@ Have a documented incident response plan:
 1. **Smart Contract Risk**: Despite security enhancements, smart contracts carry inherent risks
 2. **Oracle Risk**: Price oracle manipulation could affect profitability calculations
 3. **MEV Risk**: Front-running and sandwich attacks remain possible
-4. **Protocol Risk**: Dependency on external protocols (Morpho, Aave, DEXs)
+4. **Protocol Risk**: Dependency on external protocols (Morpho, Moonwell, DEXs)
 5. **Gas Price Risk**: High gas prices could make profitable routes unprofitable
 
 ## Security Recommendations
