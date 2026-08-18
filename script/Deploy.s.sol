@@ -68,7 +68,7 @@ contract Deploy is Script {
         console.log("--- Deployment Complete ---");
         console.log("Contract:", address(arb));
         console.log("Admin/Operator/Pauser:", deployer);
-        console.log("Whitelisted targets:", 8 + 6 + 1);
+        console.log("Whitelisted targets:", uint256(8 + 6 + 1));
         console.log("");
         console.log("Next steps:");
         console.log("1. Run SetupRoles.s.sol to separate OPERATOR/PAUSER to dedicated wallets");
