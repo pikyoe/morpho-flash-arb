@@ -23,7 +23,7 @@ contract CallBuilderTest is Test {
 
     // --- approve ---
 
-    function test_approve_encodesCorrectly() public pure {
+    function test_approve_encodesCorrectly() public view {
         FlashLoanArbitrage.Call memory call = CallBuilder.approve(token, spender, 1 ether);
 
         assertEq(call.target, token);
@@ -37,7 +37,7 @@ contract CallBuilderTest is Test {
 
     // --- aerodromeSwap ---
 
-    function test_aerodromeSwap_encodesCorrectly() public pure {
+    function test_aerodromeSwap_encodesCorrectly() public view {
         uint256 amountIn = 1000e18;
         uint256 amountOutMin = 900e18;
         address tokenIn = address(0xAAAA);
@@ -59,7 +59,7 @@ contract CallBuilderTest is Test {
 
     // --- moonwellLiquidateBorrow ---
 
-    function test_moonwellLiquidateBorrow_encodesCorrectly() public pure {
+    function test_moonwellLiquidateBorrow_encodesCorrectly() public view {
         address mTokenDebt = BaseAddresses.MOONWELL_M_USDC;
         address borrower = address(0x6666);
         uint256 repayAmount = 10_000e6;
@@ -83,7 +83,7 @@ contract CallBuilderTest is Test {
 
     // --- moonwellLiquidationLeg (standard 2-call pair) ---
 
-    function test_moonwellLiquidationLeg_returns2Calls() public pure {
+    function test_moonwellLiquidationLeg_returns2Calls() public view {
         address debtUnderlying = BaseAddresses.USDC;
         address mTokenDebt = BaseAddresses.MOONWELL_M_USDC;
         address borrower = address(0x7777);
@@ -104,7 +104,7 @@ contract CallBuilderTest is Test {
 
     // --- moonwellOevLiquidationLeg (OEV 2-call pair) ---
 
-    function test_moonwellOevLiquidationLeg_returns2Calls() public pure {
+    function test_moonwellOevLiquidationLeg_returns2Calls() public view {
         address debtUnderlying = BaseAddresses.USDC;
         address oevWrapper = BaseAddresses.MOONWELL_OEV_WRAPPER_WETH;
         address borrower = address(0x8888);
@@ -127,7 +127,7 @@ contract CallBuilderTest is Test {
 
     // --- moonwellRedeem ---
 
-    function test_moonwellRedeem_encodesCorrectly() public pure {
+    function test_moonwellRedeem_encodesCorrectly() public view {
         address mToken = BaseAddresses.MOONWELL_M_WETH;
         uint256 redeemTokens = 1e18;
 
@@ -143,7 +143,7 @@ contract CallBuilderTest is Test {
 
     // --- estimateMoonwellSeizedUnderlying ---
 
-    function test_estimateMoonwellSeizedUnderlying_basicCase() public pure {
+    function test_estimateMoonwellSeizedUnderlying_basicCase() public view {
         // Setup: repay 10,000 USDC, borrowed price = 1e18, collateral price = 3000e18
         // exchange rate = 1.02e18 (1 mWETH = 1.02 WETH)
         // incentive = 1.10e18 (10%), protocol share = 0.03e18 (3%)
@@ -174,7 +174,7 @@ contract CallBuilderTest is Test {
         assertTrue(seized > 3e6 && seized < 4e6, "Seized amount in expected range");
     }
 
-    function test_estimateMoonwellSeizedUnderlying_zeroProtocolShare() public pure {
+    function test_estimateMoonwellSeizedUnderlying_zeroProtocolShare() public view {
         uint256 repayAmount = 10_000e6;
         uint256 priceBorrowed = 1e18;
         uint256 priceCollateral = 2000e18;
