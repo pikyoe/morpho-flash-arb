@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test, console} from "forge-std/Test.sol";
+import {Test} from "forge-std/Test.sol";
 import {CallBuilder} from "../src/libraries/CallBuilder.sol";
 import {FlashLoanArbitrage} from "../src/FlashLoanArbitrage.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -23,16 +23,15 @@ contract CallBuilderTest is Test {
 
     // --- approve ---
 
-    function test_approve_encodesCorrectly() public view {
+    function test_approve_encodesCorrectly() public pure {
         FlashLoanArbitrage.Call memory call = CallBuilder.approve(token, spender, 1 ether);
 
         assertEq(call.target, token);
         assertEq(call.value, 0);
-
-        // Decode and verify
-        (address approved, uint256 amount) = abi.decode(call.data[4:], (address, uint256));
-        assertEq(approved, spender);
-        assertEq(amount, 1 ether);
+        assertEq(
+            call.data,
+            abi.encodeCall(IERC20.approve, (spender, 1 ether))
+        );
     }
 
     // --- aerodromeSwap ---
@@ -52,9 +51,21 @@ contract CallBuilderTest is Test {
         assertEq(call.target, router);
         assertEq(call.value, 0);
 
-        // Verify the route was encoded (tokenIn, tokenOut, stable, factory)
-        // The full decode requires IAerodromeRouter parameters, so we verify the data is non-empty
-        assertTrue(call.data.length > 0);
+        IAerodromeRouter.Route[] memory routes = new IAerodromeRouter.Route[](1);
+        routes[0] = IAerodromeRouter.Route({
+            from: tokenIn,
+            to: tokenOut,
+            stable: stable,
+            factory: poolFactory
+        });
+
+        assertEq(
+            call.data,
+            abi.encodeCall(
+                IAerodromeRouter.swapExactTokensForTokens,
+                (amountIn, amountOutMin, routes, recipient, deadline)
+            )
+        );
     }
 
     // --- moonwellLiquidateBorrow ---
@@ -70,15 +81,13 @@ contract CallBuilderTest is Test {
 
         assertEq(call.target, mTokenDebt);
         assertEq(call.value, 0);
-        assertTrue(call.data.length > 0);
-
-        // Decode
-        (address decodedBorrower, uint256 decodedAmount, address decodedCollateral) =
-            abi.decode(call.data[4:], (address, uint256, address));
-
-        assertEq(decodedBorrower, borrower);
-        assertEq(decodedAmount, repayAmount);
-        assertEq(decodedCollateral, mTokenCollateral);
+        assertEq(
+            call.data,
+            abi.encodeCall(
+                IMoonwellMarket.liquidateBorrow,
+                (borrower, repayAmount, mTokenCollateral)
+            )
+        );
     }
 
     // --- moonwellLiquidationLeg (standard 2-call pair) ---
@@ -97,9 +106,22 @@ contract CallBuilderTest is Test {
 
         // First call: approve
         assertEq(calls[0].target, debtUnderlying);
+        assertEq(calls[0].value, 0);
+        assertEq(
+            calls[0].data,
+            abi.encodeCall(IERC20.approve, (mTokenDebt, repayAmount))
+        );
 
         // Second call: liquidateBorrow
         assertEq(calls[1].target, mTokenDebt);
+        assertEq(calls[1].value, 0);
+        assertEq(
+            calls[1].data,
+            abi.encodeCall(
+                IMoonwellMarket.liquidateBorrow,
+                (borrower, repayAmount, mTokenCollateral)
+            )
+        );
     }
 
     // --- moonwellOevLiquidationLeg (OEV 2-call pair) ---
@@ -120,9 +142,22 @@ contract CallBuilderTest is Test {
 
         // First: approve debt to wrapper
         assertEq(calls[0].target, debtUnderlying);
+        assertEq(calls[0].value, 0);
+        assertEq(
+            calls[0].data,
+            abi.encodeCall(IERC20.approve, (oevWrapper, repayAmount))
+        );
 
         // Second: wrapper.updatePriceEarlyAndLiquidate
         assertEq(calls[1].target, oevWrapper);
+        assertEq(calls[1].value, 0);
+        assertEq(
+            calls[1].data,
+            abi.encodeCall(
+                IMoonwellOevWrapper.updatePriceEarlyAndLiquidate,
+                (borrower, repayAmount, mTokenCollateral, mTokenLoan)
+            )
+        );
     }
 
     // --- moonwellRedeem ---
@@ -135,10 +170,10 @@ contract CallBuilderTest is Test {
 
         assertEq(call.target, mToken);
         assertEq(call.value, 0);
-        assertTrue(call.data.length > 0);
-
-        (uint256 decodedTokens) = abi.decode(call.data[4:], (uint256));
-        assertEq(decodedTokens, redeemTokens);
+        assertEq(
+            call.data,
+            abi.encodeCall(IMoonwellMarket.redeem, (redeemTokens))
+        );
     }
 
     // --- estimateMoonwellSeizedUnderlying ---
@@ -148,8 +183,8 @@ contract CallBuilderTest is Test {
         // exchange rate = 1.02e18 (1 mWETH = 1.02 WETH)
         // incentive = 1.10e18 (10%), protocol share = 0.03e18 (3%)
         uint256 repayAmount = 10_000e6;
-        uint256 priceBorrowed = 1e18; // USDC = $1
-        uint256 priceCollateral = 3000e18; // WETH = $3000
+        uint256 priceBorrowed = 1e18;
+        uint256 priceCollateral = 3000e18;
         uint256 exchangeRateCollateral = 1.02e18;
         uint256 liquidationIncentive = 1.10e18;
         uint256 protocolSeizeShare = 0.03e18;
@@ -163,14 +198,7 @@ contract CallBuilderTest is Test {
             protocolSeizeShare
         );
 
-        // Gross seize = 10000 * 1e18 * 1.1e18 / (3000e18 * 1.02e18) * 1e6
-        //            = 10000 * 1.1 / (3000 * 1.02) * 1e6
-        //            = 11000 / 3060 * 1e6
-        //            = 3.5947... * 1e6 ≈ 3,594,771
-        // After protocol share: 3,594,771 * 0.97 ≈ 3,486,928
-        // Underlying: 3,486,928 * 1.02e18 / 1e18 ≈ 3,556,667
         assertTrue(seized > 0, "Should seize some collateral");
-        // Verify it's in a reasonable range (3.5 to 3.7 USDC worth of WETH)
         assertTrue(seized > 3e6 && seized < 4e6, "Seized amount in expected range");
     }
 
@@ -186,7 +214,6 @@ contract CallBuilderTest is Test {
             repayAmount, priceBorrowed, priceCollateral, exchangeRate, incentive, protocolShare
         );
 
-        // With 0% protocol share: gross = 10000 * 1.1 / 2000 = 5.5
         assertTrue(seized > 5e6 && seized < 6e6, "Full incentive without protocol share");
     }
 }
