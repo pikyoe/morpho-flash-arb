@@ -113,9 +113,6 @@ contract SecurityHardeningTest is Test {
         FlashLoanArbitrage.Call[] memory calls = new FlashLoanArbitrage.Call[](1);
         calls[0] = FlashLoanArbitrage.Call({target: WETH, value: 0, data: abi.encodeWithSelector(APPROVE_SELECTOR, BaseAddresses.AERODROME_ROUTER, 1 ether)});
 
-        // On a real flash-loan path the callback would receive only the newly borrowed
-        // assets. This test uses the public entrypoint and asserts the transaction cannot
-        // pass merely because the contract already held `existing` tokens.
         vm.prank(operator);
         vm.expectRevert();
         arb.executeArbitrage(WETH, 5 ether, calls, 0.5 ether);
@@ -151,9 +148,12 @@ contract SecurityHardeningTest is Test {
         assertFalse(arb.paused());
         FlashLoanArbitrage.Call[] memory calls = new FlashLoanArbitrage.Call[](1);
         calls[0] = FlashLoanArbitrage.Call({target: WETH, value: 0, data: abi.encodeWithSelector(APPROVE_SELECTOR, BaseAddresses.AERODROME_ROUTER, 1 ether)});
+        // No profit is created by approve(); this test only verifies pause recovery.
         deal(WETH, address(arb), 0.01 ether);
         vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(FlashLoanArbitrage.InsufficientProfit.selector, 5.02 ether, 5.01 ether));
         arb.executeArbitrage(WETH, 5 ether, calls, 0.01 ether);
+        assertFalse(arb.paused());
     }
 
     function test_MinimumFlashLoanSizePreventsDustAttacks() public {
@@ -176,7 +176,9 @@ contract SecurityHardeningTest is Test {
         calls[0] = FlashLoanArbitrage.Call({target: WETH, value: 0, data: abi.encodeWithSelector(APPROVE_SELECTOR, BaseAddresses.AERODROME_ROUTER, 1 ether)});
         deal(WETH, address(arb), 0.01 ether);
         vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(FlashLoanArbitrage.InsufficientProfit.selector, 5.02 ether, 5.01 ether));
         arb.executeArbitrage(WETH, 5 ether, calls, 0.01 ether);
+        assertEq(IERC20(WETH).balanceOf(address(arb)), 0.01 ether);
     }
 
     function test_AdminCanRevokeOperatorRole() public {
