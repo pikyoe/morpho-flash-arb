@@ -5,7 +5,7 @@ pragma solidity ^0.8.24;
 /// @dev Sourced from official docs as of Aug 2026 — always re-verify against
 ///      https://docs.morpho.org/get-started/resources/addresses/ (Morpho),
 ///      https://aerodrome.finance/security (Aerodrome) and
-///      https://docs.aave.com/developers/deployed-contracts/v3-mainnet (Aave)
+///      https://docs.moonwell.fi/moonwell/protocol-information/contracts (Moonwell)
 ///      before mainnet deployment, since protocols occasionally redeploy.
 library BaseAddresses {
     // --- Morpho Blue ---
@@ -18,9 +18,6 @@ library BaseAddresses {
 
     // --- Uniswap V3 (also on Base) ---
     address internal constant UNISWAP_V3_SWAP_ROUTER02 = 0x2626664c2603336E57B271c5C0b26F421741e481;
-
-    // --- Aave V3 (also on Base) ---
-    address internal constant AAVE_V3_POOL = 0xA238Dd80C259a72e81d7e4664a9801593F98d1c5;
 
     // --- Moonwell (Compound V2 fork on Base) ---
     // Sourced from https://docs.moonwell.fi/moonwell/protocol-information/contracts
@@ -50,6 +47,4 @@ library BaseAddresses {
     address internal constant CBBTC = 0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf;
     address internal constant AERO = 0x940181a94A35A4569E4529A3CDfB74e38FD98631;
 
-    // --- Aave V3 Oracle (Chainlink-based, prices in USD, 8 decimals) ---
-    address internal constant AAVE_V3_ORACLE = 0x2Cc0Fc26eD4563A5ce5e8bdcfe1A2878676Ae156;
 }

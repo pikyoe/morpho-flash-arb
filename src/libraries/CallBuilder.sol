@@ -3,7 +3,6 @@ pragma solidity ^0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IAerodromeRouter} from "../interfaces/IAerodromeRouter.sol";
-import {IAaveV3Pool} from "../interfaces/IAaveV3Pool.sol";
 import {IMoonwellMarket} from "../interfaces/IMoonwellMarket.sol";
 import {IMoonwellOevWrapper} from "../interfaces/IMoonwellOevWrapper.sol";
 import {FlashLoanArbitrage} from "../FlashLoanArbitrage.sol";
@@ -47,53 +46,6 @@ library CallBuilder {
             value: 0,
             data: abi.encodeCall(
                 IAerodromeRouter.swapExactTokensForTokens, (amountIn, amountOutMin, routes, recipient, deadline)
-            )
-        });
-    }
-
-    /// @notice Builds an Aave V3 `supply` call (the "lending protocol" leg).
-    function aaveSupply(address pool, address asset, uint256 amount, address onBehalfOf)
-        internal
-        pure
-        returns (FlashLoanArbitrage.Call memory)
-    {
-        return FlashLoanArbitrage.Call({
-            target: pool,
-            value: 0,
-            data: abi.encodeCall(IAaveV3Pool.supply, (asset, amount, onBehalfOf, 0))
-        });
-    }
-
-    /// @notice Builds an Aave V3 `withdraw` call (the "lending protocol" leg).
-    function aaveWithdraw(address pool, address asset, uint256 amount, address to)
-        internal
-        pure
-        returns (FlashLoanArbitrage.Call memory)
-    {
-        return FlashLoanArbitrage.Call({
-            target: pool,
-            value: 0,
-            data: abi.encodeCall(IAaveV3Pool.withdraw, (asset, amount, to))
-        });
-    }
-
-    /// @notice Builds an Aave V3 `liquidationCall` — the core "lending protocol" leg
-    ///         of a liquidation-arbitrage route: repay part of an undercollateralized
-    ///         user's debt, receive their collateral at a discount, then sell that
-    ///         collateral on a DEX (see `aerodromeSwap`) to realize the spread.
-    function aaveLiquidationCall(
-        address pool,
-        address collateralAsset,
-        address debtAsset,
-        address user,
-        uint256 debtToCover,
-        bool receiveAToken
-    ) internal pure returns (FlashLoanArbitrage.Call memory) {
-        return FlashLoanArbitrage.Call({
-            target: pool,
-            value: 0,
-            data: abi.encodeCall(
-                IAaveV3Pool.liquidationCall, (collateralAsset, debtAsset, user, debtToCover, receiveAToken)
             )
         });
     }

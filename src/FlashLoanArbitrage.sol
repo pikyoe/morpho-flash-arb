@@ -165,7 +165,7 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
 
     /// @notice Rescue any tokens that end up stuck in this contract (e.g. dust from a
     ///         partially-filled route, or a token sent here by mistake).
-    function withdrawToken(address token, address to, uint256 amount) external onlyRole(ADMIN_ROLE) {
+    function withdrawToken(address token, address to, uint256 amount) external onlyRole(ADMIN_ROLE) nonReentrant {
         if (token == address(0)) revert ZeroAddress("token");
         if (to == address(0)) revert ZeroAddress("to");
         IERC20(token).safeTransfer(to, amount);
@@ -173,7 +173,7 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     }
 
     /// @notice Rescue any native ETH stuck in this contract.
-    function withdrawETH(address payable to, uint256 amount) external onlyRole(ADMIN_ROLE) {
+    function withdrawETH(address payable to, uint256 amount) external onlyRole(ADMIN_ROLE) nonReentrant {
         if (to == address(0)) revert ZeroAddress("to");
         (bool success,) = to.call{value: amount}("");
         require(success, "ETH transfer failed");

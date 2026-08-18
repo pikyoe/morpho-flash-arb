@@ -15,9 +15,9 @@ contract FlashLoanArbitrageTest is Test {
     FlashLoanArbitrage internal arb;
 
     address internal admin = address(this);
-    address internal operator = address(0xOPERATOR);
-    address internal pauser = address(0xPAUSER);
-    address internal stranger = address(0xBEEF);
+    address internal operator = makeAddr("operator");
+    address internal pauser = makeAddr("pauser");
+    address internal stranger = makeAddr("stranger");
 
     address internal constant WETH = BaseAddresses.WETH;
     address internal constant MORPHO = BaseAddresses.MORPHO_BLUE;
@@ -135,7 +135,7 @@ contract FlashLoanArbitrageTest is Test {
     // --- Whitelist functionality ---
 
     function test_AdminCanAddToWhitelist() public {
-        address newTarget = address(0xNEW_TARGET);
+        address newTarget = makeAddr("newTarget");
         assertFalse(arb.isTargetWhitelisted(newTarget));
         
         arb.addTargetToWhitelist(newTarget);
@@ -155,11 +155,11 @@ contract FlashLoanArbitrageTest is Test {
     function test_RevertIf_NonAdminModifiesWhitelist() public {
         vm.prank(stranger);
         vm.expectRevert();
-        arb.addTargetToWhitelist(address(0xNEW_TARGET));
+        arb.addTargetToWhitelist(makeAddr("newTarget"));
     }
 
     function test_RevertIf_ExecuteWithNonWhitelistedTarget() public {
-        address maliciousTarget = address(0xMALICIOUS);
+        address maliciousTarget = makeAddr("malicious");
         
         FlashLoanArbitrage.Call[] memory calls = new FlashLoanArbitrage.Call[](1);
         calls[0] = FlashLoanArbitrage.Call({

@@ -19,9 +19,9 @@ contract SecurityHardeningTest is Test {
     FlashLoanArbitrage internal arb;
 
     address internal admin = address(this);
-    address internal operator = address(0xOPERATOR);
-    address internal pauser = address(0xPAUSER);
-    address internal attacker = address(0xATTACKER);
+    address internal operator = makeAddr("operator");
+    address internal pauser = makeAddr("pauser");
+    address internal attacker = makeAddr("attacker");
 
     address internal constant WETH = BaseAddresses.WETH;
     address internal constant MORPHO = BaseAddresses.MORPHO_BLUE;
@@ -93,7 +93,7 @@ contract SecurityHardeningTest is Test {
 
     function test_AttackerCannotBypassWhitelist() public {
         // Try to call a non-whitelisted malicious contract
-        address maliciousContract = address(0xMALICIOUS);
+        address maliciousContract = makeAddr("malicious");
         
         FlashLoanArbitrage.Call[] memory calls = new FlashLoanArbitrage.Call[](1);
         calls[0] = FlashLoanArbitrage.Call({
@@ -109,7 +109,7 @@ contract SecurityHardeningTest is Test {
 
     function test_WhitelistPreventsTokenDrainage() public {
         // Try to approve a non-whitelisted spender
-        address maliciousSpender = address(0xMALICIOUS);
+        address maliciousSpender = makeAddr("malicious");
         
         FlashLoanArbitrage.Call[] memory calls = new FlashLoanArbitrage.Call[](1);
         calls[0] = FlashLoanArbitrage.Call({

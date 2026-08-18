@@ -7,7 +7,6 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {CallBuilder} from "../src/libraries/CallBuilder.sol";
 import {FlashLoanArbitrage} from "../src/FlashLoanArbitrage.sol";
 import {IAerodromeRouter} from "../src/interfaces/IAerodromeRouter.sol";
-import {IAaveV3Pool} from "../src/interfaces/IAaveV3Pool.sol";
 import {IMoonwellMarket} from "../src/interfaces/IMoonwellMarket.sol";
 import {IMoonwellOevWrapper} from "../src/interfaces/IMoonwellOevWrapper.sol";
 
@@ -39,27 +38,6 @@ contract CallBuilderTest is Test {
         assertEq(
             call.data,
             abi.encodeCall(IAerodromeRouter.swapExactTokensForTokens, (1000, 990, routes, USER, 9999999999))
-        );
-    }
-
-    function test_AaveSupply() public pure {
-        FlashLoanArbitrage.Call memory call = CallBuilder.aaveSupply(POOL, TOKEN, 500, USER);
-        assertEq(call.target, POOL);
-        assertEq(call.data, abi.encodeCall(IAaveV3Pool.supply, (TOKEN, 500, USER, 0)));
-    }
-
-    function test_AaveWithdraw() public pure {
-        FlashLoanArbitrage.Call memory call = CallBuilder.aaveWithdraw(POOL, TOKEN, 500, USER);
-        assertEq(call.target, POOL);
-        assertEq(call.data, abi.encodeCall(IAaveV3Pool.withdraw, (TOKEN, 500, USER)));
-    }
-
-    function test_AaveLiquidationCall() public pure {
-        FlashLoanArbitrage.Call memory call =
-            CallBuilder.aaveLiquidationCall(POOL, TOKEN, SPENDER, USER, 1000, false);
-        assertEq(call.target, POOL);
-        assertEq(
-            call.data, abi.encodeCall(IAaveV3Pool.liquidationCall, (TOKEN, SPENDER, USER, 1000, false))
         );
     }
 
