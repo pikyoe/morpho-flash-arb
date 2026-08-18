@@ -6,7 +6,6 @@ import {StdCheats} from "forge-std/StdCheats.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {BaseAddresses} from "../src/BaseAddresses.sol";
 import {MockPriceFeed} from "../src/mocks/MockPriceFeed.sol";
-import {IMoonwellMarket} from "../src/interfaces/IMoonwellMarket.sol";
 import {IMoonwellComptroller} from "../src/interfaces/IMoonwellComptroller.sol";
 
 /// @notice Minimal Moonwell oracle interface for fork testing.
@@ -47,14 +46,9 @@ contract SetupLiquidatablePosition is Script, StdCheats {
         vm.startBroadcast(TEST_BORROWER_KEY);
 
         IERC20(BaseAddresses.WETH).approve(BaseAddresses.MOONWELL_M_WETH, type(uint256).max);
-        // mWETH.supply(uint256) — supply underlying WETH
-        (uint256 supplyErr,) = IMoonwellMarket(BaseAddresses.MOONWELL_M_WETH).redeem(0);
-        // Actually mToken.supply() takes the underlying amount
-        // Moonwell uses the Compound V2 interface: mToken.mint(uint256) supplies underlying
-        // But our IMoonwellMarket only has liquidateBorrow/redeem/exchangeRateStored/etc.
+        // Moonwell uses the Compound V2 interface: mToken.mint(uint256) supplies underlying.
+        // Our IMoonwellMarket only has liquidateBorrow/redeem/exchangeRateStored/etc.
         // For the test script, we call the raw function via low-level call.
-
-        // mWETH.supply(supplyAmount) — not in our interface, use raw call
         (bool supplyOk,) = BaseAddresses.MOONWELL_M_WETH.call(
             abi.encodeWithSignature("mint(uint256)", SUPPLY_AMOUNT)
         );
@@ -63,7 +57,7 @@ contract SetupLiquidatablePosition is Script, StdCheats {
         console.log("Supplied", SUPPLY_AMOUNT, "WETH as collateral");
 
         // Get max borrowable USDC
-        (, uint256 liquidity,,) = IMoonwellComptroller(BaseAddresses.MOONWELL_COMPTROLLER)
+        (, uint256 liquidity,) = IMoonwellComptroller(BaseAddresses.MOONWELL_COMPTROLLER)
             .getAccountLiquidity(testBorrower);
         console.log("Available liquidity (USD, 18 dec):", liquidity);
 

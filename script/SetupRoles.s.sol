@@ -27,7 +27,7 @@ contract SetupRoles is Script {
         console.log("Operator:", operator);
         console.log("Pauser:", pauser);
 
-        FlashLoanArbitrage arb = FlashLoanArbitrage(arbAddress);
+        FlashLoanArbitrage arb = FlashLoanArbitrage(payable(arbAddress));
         bytes32 adminRole = arb.ADMIN_ROLE();
         bytes32 operatorRole = arb.OPERATOR_ROLE();
         bytes32 pauserRole = arb.PAUSER_ROLE();
