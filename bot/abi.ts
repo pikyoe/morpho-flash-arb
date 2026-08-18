@@ -1,21 +1,33 @@
-export const AAVE_V3_POOL_ABI: string[] = [
-  "function getUserAccountData(address user) view returns (uint256 totalCollateralBase, uint256 totalDebtBase, uint256 availableBorrowsBase, uint256 currentLiquidationThreshold, uint256 ltv, uint256 healthFactor)",
-  "function liquidationCall(address collateralAsset, address debtAsset, address user, uint256 debtToCover, bool receiveAToken)",
+export const MOONWELL_COMPTROLLER_ABI: string[] = [
+  "function getAccountLiquidity(address account) view returns (uint256 error, uint256 liquidity, uint256 shortfall)",
+  "function closeFactorMantissa() view returns (uint256)",
+  "function liquidationIncentiveMantissa() view returns (uint256)",
+  "function protocolSeizeShareMantissa() view returns (uint256)",
+  "function oracle() view returns (address)",
 ];
 
-export const AAVE_POOL_RESERVES_ABI: string[] = [
-  "function getReservesList() view returns (address[])",
-  "function getReserveData(address asset) view returns (tuple(tuple(uint256 data) configuration, uint128 liquidityIndex, uint128 currentLiquidityRate, uint128 variableBorrowIndex, uint128 currentVariableBorrowRate, uint128 currentStableBorrowRate, uint40 lastUpdateTimestamp, uint16 id, address aTokenAddress, address stableDebtTokenAddress, address variableDebtTokenAddress, address interestRateStrategyAddress, uint128 accruedToTreasury, uint128 unbacked, uint128 isolationModeTotalDebt))",
+export const MOONWELL_MARKET_ABI: string[] = [
+  "function liquidateBorrow(address borrower, uint256 repayAmount, address mTokenCollateral) returns (uint256)",
+  "function redeem(uint256 redeemTokens) returns (uint256)",
+  "function exchangeRateStored() view returns (uint256)",
+  "function borrowBalanceStored(address account) view returns (uint256)",
+  "function underlying() view returns (address)",
+  "function balanceOf(address) view returns (uint256)",
+  "event Borrow(address borrower, uint256 borrowAmount, uint256 accountBorrows, uint256 totalBorrows)",
 ];
 
-export const AAVE_ORACLE_ABI: string[] = [
-  "function getAssetPrice(address asset) view returns (uint256)",
-  "function BASE_CURRENCY_UNIT() view returns (uint256)",
+export const MOONWELL_ORACLE_ABI: string[] = [
+  "function getUnderlyingPrice(address mToken) view returns (uint256)",
+];
+
+export const MOONWELL_OEV_WRAPPER_ABI: string[] = [
+  "function updatePriceEarlyAndLiquidate(address borrower, uint256 repayAmount, address mTokenCollateral, address mTokenLoan)",
 ];
 
 export const AERODROME_ROUTER_ABI: string[] = [
   "function getAmountsOut(uint256 amountIn, tuple(address from, address to, bool stable, address factory)[] routes) view returns (uint256[] amounts)",
   "function swapExactTokensForTokens(uint256 amountIn, uint256 amountOutMin, tuple(address from,address to,bool stable,address factory)[] routes, address to, uint256 deadline) returns (uint256[] amounts)",
+  "event Swap(address indexed sender, uint256 amountIn, uint256 amountOut, address indexed to, address indexed tokenIn, address tokenOut)",
 ];
 
 export const ERC20_ABI: string[] = [

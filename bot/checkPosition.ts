@@ -1,215 +1,173 @@
 #!/usr/bin/env node
 /**
- * Off-chain half of the arbitrage: checks whether a given Aave V3 borrower on
- * Base is liquidatable, prices the DEX-side exit on Aerodrome, and (optionally)
- * submits the resulting FlashLoanArbitrage.executeArbitrage transaction.
+ * Manual CLI: check one Moonwell position on Base mainnet, size the liquidation
+ * with the exact on-chain math (close factor, liquidation incentive, protocol
+ * seize share, collateral cap), price the DEX exit, and optionally submit.
+ *
+ * Uses the same execution engine as the watch bot (bot/executor.ts), so the
+ * manual path is exactly as safe as the automated one.
  *
  * Usage:
- *   npx tsx checkPosition.ts \
- *     --user 0xBorrowerAddress \
- *     --debtAsset USDC \
- *     --collateralAsset WETH \
- *     --debtToCover 1000000000 \
- *     [--bonusBps 500] [--execute]
+ *   npx tsx checkPosition.ts --user 0xBorrowerAddress \
+ *     --debtAsset USDC --collateralAsset WETH \
+ *     [--debtToCover 1000000000] [--execute]
+ *
+ * NOTE: the liquidation parameters are read on-chain from the Moonwell
+ * Comptroller — `--bonusBps` is accepted for backward compatibility but ignored.
  */
 import "dotenv/config";
 import { ethers } from "ethers";
-import { ADDRESSES } from "./addresses.js";
-import { AAVE_V3_POOL_ABI, AERODROME_ROUTER_ABI, ERC20_ABI, FLASH_LOAN_ARBITRAGE_ABI, AAVE_ORACLE_ABI } from "./abi.js";
-import type { Address, ArbitrageCall } from "./types.js";
-
-const TOKENS: Record<string, Address> = {
-  WETH: ADDRESSES.WETH!,
-  USDC: ADDRESSES.USDC!,
-  CBETH: ADDRESSES.CBETH!,
-};
-
-function resolveToken(symbolOrAddress: string): Address {
-  if (ethers.isAddress(symbolOrAddress)) return symbolOrAddress;
-  // Cast needed: ethers' `isAddress` type predicate is `value is string`, and
-  // since our param is already typed `string`, TS narrows the false-branch
-  // to `never` (logically "provably a string, so 'not a string' is
-  // impossible" — a static-type-only quirk, not a real runtime guarantee).
-  const addr = TOKENS[(symbolOrAddress as string).toUpperCase()];
-  if (!addr) throw new Error(`Unknown token symbol: ${symbolOrAddress as string}`);
-  return addr;
-}
+import { LiquidationExecutor, describeOpportunity, loadConfig } from "./executor.js";
+import type { Address, PositionEntry } from "./types.js";
 
 interface Args {
   execute: boolean;
-  bonusBps: bigint;
   user: Address;
-  debtAsset: string;
-  collateralAsset: string;
-  debtToCover: string;
+  debtAsset: string | undefined;
+  collateralAsset: string | undefined;
+  debtToCover: bigint | undefined;
 }
 
 function parseArgs(): Args {
   const args = process.argv.slice(2);
-  const out: Partial<Args> = { execute: false, bonusBps: 500n };
+  const out: Args = { execute: false, user: "", debtAsset: undefined, collateralAsset: undefined, debtToCover: undefined };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--execute") out.execute = true;
-    else if (a === "--user") {
+    else if (a === "--user") out.user = args[++i] ?? "";
+    else if (a === "--debtAsset") out.debtAsset = args[++i];
+    else if (a === "--collateralAsset") out.collateralAsset = args[++i];
+    else if (a === "--debtToCover") {
       const v = args[++i];
-      if (v !== undefined) out.user = v;
-    } else if (a === "--debtAsset") {
-      const v = args[++i];
-      if (v !== undefined) out.debtAsset = v;
-    } else if (a === "--collateralAsset") {
-      const v = args[++i];
-      if (v !== undefined) out.collateralAsset = v;
-    } else if (a === "--debtToCover") {
-      const v = args[++i];
-      if (v !== undefined) out.debtToCover = v;
+      if (v !== undefined) out.debtToCover = BigInt(v);
     } else if (a === "--bonusBps") {
-      const v = args[++i];
-      if (v !== undefined) out.bonusBps = BigInt(v);
+      console.warn("note: --bonusBps is ignored — the liquidation incentive is read on-chain from the Moonwell Comptroller.");
+      i++; // consume the value
     }
   }
-  if (!out.user || !out.debtAsset || !out.collateralAsset || !out.debtToCover) {
+  if (!out.user || !ethers.isAddress(out.user)) {
     console.error(
-      "Usage: node checkPosition.ts --user <addr> --debtAsset <sym|addr> " +
-        "--collateralAsset <sym|addr> --debtToCover <amountRaw> [--bonusBps 500] [--execute]"
+      "Usage: node checkPosition.ts --user <addr> [--debtAsset <sym|addr>] [--collateralAsset <sym|addr>] " +
+        "[--debtToCover <amountRaw>] [--execute]"
     );
     process.exit(1);
   }
-  return out as Args;
+  return out;
+}
+
+function findEntry(entries: PositionEntry[], arg: string | undefined): PositionEntry | null {
+  if (!arg) return null;
+  const target = arg.toLowerCase();
+  const bySymbol = entries.find((e) => e.symbol.toLowerCase() === target);
+  if (bySymbol) return bySymbol;
+  const byAddress = entries.find((e) => e.asset.toLowerCase() === target);
+  return byAddress ?? null;
+}
+
+function logPosition(user: Address, position: { collateral: PositionEntry[]; debt: PositionEntry[] }): void {
+  console.log(`\n=== Position breakdown for ${user} ===`);
+  console.log("Collateral:");
+  for (const c of position.collateral) {
+    console.log(`  ${c.symbol.padEnd(8)} ${ethers.formatUnits(c.amount, c.decimals)}  (${c.asset})`);
+  }
+  console.log("Debt:");
+  for (const d of position.debt) {
+    console.log(`  ${d.symbol.padEnd(8)} ${ethers.formatUnits(d.amount, d.decimals)}  (${d.asset})`);
+  }
 }
 
 async function main(): Promise<void> {
   const args = parseArgs();
-  const debtAsset = resolveToken(args.debtAsset);
-  const collateralAsset = resolveToken(args.collateralAsset);
-  const debtToCover = BigInt(args.debtToCover);
+  const executor = new LiquidationExecutor(loadConfig());
+  await executor.loadMarkets();
 
-  const rpcUrl = process.env.BASE_RPC_URL || "https://mainnet.base.org";
-  const provider = new ethers.JsonRpcProvider(rpcUrl, 8453, {
-    staticNetwork: true,
-    batchMaxCount: 1,
+  const position = await executor.getPosition(args.user);
+  if (!position) {
+    console.error("No collateral + debt found for this user (or RPC error). Try bot/getPosition.ts first.");
+    process.exit(1);
+  }
+  logPosition(args.user, position);
+
+  const { error, shortfall } = await executor.accountLiquidity(args.user);
+  console.log(`\nComptroller: error=${error}, shortfall=$${ethers.formatUnits(shortfall, 18)}`);
+  if (error !== 0n || shortfall <= 0n) {
+    console.log("Position is healthy (shortfall == 0) — not liquidatable.");
+    return;
+  }
+
+  const health = await executor.healthFactor(args.user);
+  if (health === null) process.exit(1);
+  console.log(`Collateral/debt ratio (display): ${ethers.formatUnits(health, 18)}`);
+
+  const prices = await executor.getPrices([...position.collateral, ...position.debt]);
+
+  let collateralEntry = findEntry(position.collateral, args.collateralAsset);
+  let debtEntry = findEntry(position.debt, args.debtAsset);
+  if (!collateralEntry || !debtEntry) {
+    if (args.collateralAsset !== undefined || args.debtAsset !== undefined) {
+      console.error(`Could not find the requested asset(s) in this user's position.`);
+      process.exit(1);
+    }
+    // Auto-pick: the largest positions by USD value.
+    collateralEntry = position.collateral[0]!;
+    debtEntry = position.debt[0]!;
+    for (const c of position.collateral) {
+      const p = prices[c.asset] ?? 0n;
+      const cp = prices[collateralEntry.asset] ?? 0n;
+      if ((c.amount * p) / 10n ** BigInt(c.decimals) > (collateralEntry.amount * cp) / 10n ** BigInt(collateralEntry.decimals)) {
+        collateralEntry = c;
+      }
+    }
+    for (const d of position.debt) {
+      const p = prices[d.asset] ?? 0n;
+      const dp = prices[debtEntry.asset] ?? 0n;
+      if ((d.amount * p) / 10n ** BigInt(d.decimals) > (debtEntry.amount * dp) / 10n ** BigInt(debtEntry.decimals)) {
+        debtEntry = d;
+      }
+    }
+  }
+
+  const opp = await executor.evaluatePair(args.user, health, collateralEntry, debtEntry, prices, {
+    ...(args.debtToCover !== undefined ? { debtToCover: args.debtToCover } : {}),
   });
-
-  const pool = new ethers.Contract(ADDRESSES.AAVE_V3_POOL!, AAVE_V3_POOL_ABI, provider);
-  const oracle = new ethers.Contract(ADDRESSES.AAVE_V3_ORACLE!, AAVE_ORACLE_ABI, provider);
-  const router = new ethers.Contract(ADDRESSES.AERODROME_ROUTER!, AERODROME_ROUTER_ABI, provider);
-  const debtToken = new ethers.Contract(debtAsset, ERC20_ABI, provider);
-  const collateralToken = new ethers.Contract(collateralAsset, ERC20_ABI, provider);
-
-  const [debtSymbol, debtDecimalsRaw, collateralSymbol, collateralDecimalsRaw] = await Promise.all([
-    debtToken.symbol!() as Promise<string>,
-    debtToken.decimals!() as Promise<number>,
-    collateralToken.symbol!() as Promise<string>,
-    collateralToken.decimals!() as Promise<number>,
-  ]);
-  const debtDecimals = Number(debtDecimalsRaw);
-  const collateralDecimals = Number(collateralDecimalsRaw);
-
-  // --- Step 1: is this position liquidatable? ---
-  const accountData = await pool.getUserAccountData!(args.user);
-  const healthFactor = accountData.healthFactor as bigint;
-  const ONE = 10n ** 18n;
-  console.log(`Health factor for ${args.user}: ${ethers.formatUnits(healthFactor, 18)}`);
-
-  if (healthFactor >= ONE) {
-    console.log("Position is healthy — not liquidatable. Nothing to do.");
+  if (!opp) {
+    console.log(
+      "Not executable: no Aerodrome route for this pair, or estimated profit is below MIN_PROFIT_USD " +
+        `($${executor.config.minProfitUsd}).`
+    );
     return;
   }
 
-  // --- Step 2: estimate seized collateral, using real oracle prices. ---
-  const [debtAssetPrice, collateralAssetPrice] = (await Promise.all([
-    oracle.getAssetPrice!(debtAsset),
-    oracle.getAssetPrice!(collateralAsset),
-  ])) as [bigint, bigint];
-
-  if (debtAssetPrice === 0n || collateralAssetPrice === 0n) {
-    throw new Error("Oracle returned zero price — check the asset addresses");
-  }
-
-  const liquidationBonusBps = 10_000n + args.bonusBps; // e.g. bonusBps=500 -> 10500
-  const collateralUnit = 10n ** BigInt(collateralDecimals);
-  const debtUnit = 10n ** BigInt(debtDecimals);
-
-  const seizedCollateralEstimate =
-    (debtToCover * debtAssetPrice * collateralUnit * liquidationBonusBps) /
-    (collateralAssetPrice * debtUnit * 10_000n);
-
-  console.log(`Debt asset price: ${ethers.formatUnits(debtAssetPrice, 8)} USD`);
-  console.log(`Collateral asset price: ${ethers.formatUnits(collateralAssetPrice, 8)} USD`);
+  console.log(`\n=== Opportunity ===`);
+  console.log(describeOpportunity(opp));
   console.log(
-    `Estimated collateral seized (via oracle prices, bonus=${args.bonusBps}bps): ` +
-      `${ethers.formatUnits(seizedCollateralEstimate, collateralDecimals)} ${collateralSymbol}`
+    `  liquidationIncentive: +${opp.liquidationBonusNetBps} bps, protocol share: ${opp.protocolFeeAmount} ` +
+      `${opp.collateralSymbol}, flash amount (debtToCover): ${opp.debtToCover}`
   );
-
-  // --- Step 3: quote selling seized collateral on Aerodrome. ---
-  const routes = [{ from: collateralAsset, to: debtAsset, stable: false, factory: ADDRESSES.AERODROME_POOL_FACTORY! }];
-  const amountsOut = (await router.getAmountsOut!(seizedCollateralEstimate, routes)) as bigint[];
-  const dexProceeds = amountsOut[amountsOut.length - 1]!;
-
-  console.log(`Selling ${seizedCollateralEstimate} ${collateralSymbol} on Aerodrome -> ${dexProceeds} ${debtSymbol}`);
-
-  // --- Step 4: profit check ---
-  const profit = dexProceeds - debtToCover;
-  const minProfit = BigInt(process.env.MIN_PROFIT_WEI || "0");
-
-  console.log(`Estimated profit: ${ethers.formatUnits(profit, debtDecimals)} ${debtSymbol}`);
-
-  if (profit <= minProfit) {
-    console.log("Not profitable enough. Skipping.");
-    return;
+  console.log(`  mTokenDebt: ${opp.mTokenDebt}, mTokenCollateral: ${opp.mTokenCollateral}`);
+  console.log(`  route: ${opp.routes.map((r) => `${r.from}->${r.to}${r.stable ? " (stable)" : ""}`).join(" -> ")}`);
+  console.log(`  amountOutMin (slippage-protected): ${opp.amountOutMin}`);
+  console.log(`  minProfit guard: ${opp.minProfit}`);
+  console.log("\n  calls:");
+  for (const call of opp.calls) {
+    console.log(`    target=${call.target} value=${call.value} data=${call.data.slice(0, 66)}...`);
   }
-
-  // --- Build the calldata for FlashLoanArbitrage.executeArbitrage ---
-  const deadline = Math.floor(Date.now() / 1000) + 300;
-  const poolIface = new ethers.Interface(AAVE_V3_POOL_ABI);
-  const erc20Iface = new ethers.Interface(ERC20_ABI);
-  const routerIface = new ethers.Interface(AERODROME_ROUTER_ABI);
-
-  const arbAddress = process.env.ARBITRAGE_CONTRACT_ADDRESS;
-  if (!arbAddress) throw new Error("Set ARBITRAGE_CONTRACT_ADDRESS in your .env");
-
-  const calls: ArbitrageCall[] = [
-    {
-      target: ADDRESSES.AAVE_V3_POOL!,
-      value: 0n,
-      data: poolIface.encodeFunctionData("liquidationCall", [collateralAsset, debtAsset, args.user, debtToCover, false]),
-    },
-    {
-      target: collateralAsset,
-      value: 0n,
-      data: erc20Iface.encodeFunctionData("approve", [ADDRESSES.AERODROME_ROUTER, seizedCollateralEstimate]),
-    },
-    {
-      target: ADDRESSES.AERODROME_ROUTER!,
-      value: 0n,
-      data: routerIface.encodeFunctionData("swapExactTokensForTokens", [
-        seizedCollateralEstimate,
-        (dexProceeds * 99n) / 100n,
-        routes,
-        arbAddress,
-        deadline,
-      ]),
-    },
-  ];
-
-  console.log("\nBuilt route:");
-  console.log(JSON.stringify(calls, (_key, value) => (typeof value === "bigint" ? value.toString() : value), 2));
 
   if (!args.execute) {
-    console.log("\nDry run only. Re-run with --execute to submit the transaction.");
+    console.log("\nDry run (no --execute). Re-run with --execute to submit (requires LIVE_EXECUTION=true in .env).");
     return;
   }
+  if (!executor.config.liveExecution) {
+    console.error("\n--execute given but LIVE_EXECUTION is not 'true' in .env — nothing was sent.");
+    process.exit(1);
+  }
 
-  const privateKey = process.env.PRIVATE_KEY;
-  if (!privateKey) throw new Error("Set PRIVATE_KEY in your .env to execute");
-
-  const wallet = new ethers.Wallet(privateKey, provider);
-  const arb = new ethers.Contract(arbAddress, FLASH_LOAN_ARBITRAGE_ABI, wallet);
-
-  console.log("\nSubmitting executeArbitrage...");
-  const tx = await arb.executeArbitrage!(debtAsset, debtToCover, calls, minProfit);
-  console.log(`Tx sent: ${tx.hash}`);
-  const receipt = await tx.wait();
-  console.log(`Confirmed in block ${receipt.blockNumber}`);
+  console.log("\nSubmitting...");
+  const result = await executor.execute(opp);
+  console.log(`Result: ${result.status}${result.message ? ` — ${result.message}` : ""}${result.txHash ? ` (${result.txHash})` : ""}`);
+  if (result.status !== "confirmed" && result.status !== "submitted") {
+    process.exitCode = 1;
+  }
 }
 
 main().catch((err: unknown) => {

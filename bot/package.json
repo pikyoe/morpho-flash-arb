@@ -2,7 +2,7 @@
   "name": "morpho-flash-arb-bot",
   "version": "0.2.0",
   "private": true,
-  "description": "Off-chain scanner that finds liquidatable Aave V3 positions on Base, prices the DEX-side exit on Aerodrome, and fires FlashLoanArbitrage.executeArbitrage when the route is profitable. Now with ML-enhanced predictions.",
+  "description": "Off-chain scanner that finds liquidatable Moonwell positions on Base, prices the DEX-side exit on Aerodrome, and fires FlashLoanArbitrage.executeArbitrage when the route is profitable. Now with ML-enhanced predictions.",
   "type": "module",
   "scripts": {
     "scan": "tsx scanBorrowers.ts",
@@ -10,7 +10,8 @@
     "position": "tsx getPosition.ts",
     "watch": "tsx watch.ts",
     "ml-watch": "tsx ml-enhanced-watch.ts",
-    "train-models": "python3 bot/ml/train_models.py",
+    "preview": "tsx server.ts",
+    "train-models": "python3 ml/train_models.py",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

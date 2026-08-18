@@ -34,7 +34,7 @@ contract SecurityHardeningTest is Test {
         
         // Setup initial whitelist
         address[] memory initialTargets = new address[](5);
-        initialTargets[0] = BaseAddresses.AAVE_V3_POOL;
+        initialTargets[0] = BaseAddresses.MOONWELL_M_USDC;
         initialTargets[1] = BaseAddresses.AERODROME_ROUTER;
         initialTargets[2] = BaseAddresses.UNISWAP_V3_SWAP_ROUTER02;
         initialTargets[3] = BaseAddresses.WETH;

@@ -38,7 +38,7 @@ contract FlashLoanArbitrageTest is Test {
 
     function _getInitialTargets() internal pure returns (address[] memory) {
         address[] memory targets = new address[](5);
-        targets[0] = BaseAddresses.AAVE_V3_POOL;
+        targets[0] = BaseAddresses.MOONWELL_M_USDC;
         targets[1] = BaseAddresses.AERODROME_ROUTER;
         targets[2] = BaseAddresses.UNISWAP_V3_SWAP_ROUTER02;
         targets[3] = BaseAddresses.WETH;
@@ -65,8 +65,14 @@ contract FlashLoanArbitrageTest is Test {
     }
 
     function test_OperatorCanExecuteArbitrage() public {
-        FlashLoanArbitrage.Call[] memory calls = new FlashLoanArbitrage.Call[](0);
-        
+        // Calls must be non-empty (executeArbitrage reverts on an empty array).
+        FlashLoanArbitrage.Call[] memory calls = new FlashLoanArbitrage.Call[](1);
+        calls[0] = FlashLoanArbitrage.Call({
+            target: BaseAddresses.WETH,
+            value: 0,
+            data: abi.encodeWithSignature("approve(address,uint256)", BaseAddresses.AERODROME_ROUTER, 1 ether)
+        });
+
         deal(WETH, address(arb), 0.01 ether);
         
         vm.prank(operator);
@@ -138,7 +144,7 @@ contract FlashLoanArbitrageTest is Test {
     }
 
     function test_AdminCanRemoveFromWhitelist() public {
-        address target = BaseAddresses.AAVE_V3_POOL;
+        address target = BaseAddresses.MOONWELL_M_USDC;
         assertTrue(arb.isTargetWhitelisted(target));
         
         arb.removeTargetFromWhitelist(target);
@@ -269,12 +275,13 @@ contract FlashLoanArbitrageTest is Test {
             data: abi.encodeWithSignature("approve(address,uint256)", BaseAddresses.AERODROME_ROUTER, 1 ether)
         });
 
-        uint256 adminBalanceBefore = IERC20(WETH).balanceOf(admin);
+        // Profit is swept to the initiator of executeArbitrage — the operator here.
+        uint256 operatorBalanceBefore = IERC20(WETH).balanceOf(operator);
 
         vm.prank(operator);
         arb.executeArbitrage(WETH, borrowAmount, calls, simulatedProfit);
 
-        assertEq(IERC20(WETH).balanceOf(admin), adminBalanceBefore + simulatedProfit, "profit not forwarded");
+        assertEq(IERC20(WETH).balanceOf(operator), operatorBalanceBefore + simulatedProfit, "profit not forwarded");
         assertEq(IERC20(WETH).balanceOf(address(arb)), 0, "contract should not retain funds");
         assertEq(IERC20(WETH).balanceOf(MORPHO) >= borrowAmount, true, "morpho should be repaid");
     }

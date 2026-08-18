@@ -12,9 +12,9 @@ import {IMorpho, IMorphoFlashLoanCallback} from "./interfaces/IMorpho.sol";
 /// @title FlashLoanArbitrage
 /// @notice Flash-borrows an asset from Morpho Blue (fee-free flash loans) on Base,
 ///         executes an arbitrary, off-chain-computed sequence of calls (a DEX leg
-///         such as Aerodrome/Uniswap V3, and a lending-protocol leg such as Aave V3
-///         or a Morpho market) to capture a price/rate spread, repays the loan, and
-///         sweeps any profit to the owner.
+///         such as Aerodrome/Uniswap V3, and a lending-protocol leg such as a
+///         Moonwell or Aave V3 liquidation) to capture a price/rate spread, repays
+///         the loan, and sweeps any profit to the owner.
 /// @dev This contract is deliberately generic: it does not hardcode a single DEX or
 ///      lending protocol. Profitable routes must be found off-chain (see the `bot/`
 ///      script) because scanning prices on-chain is far too gas-expensive to be
@@ -37,7 +37,7 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
 
     /// @notice A single call to make as part of an arbitrage route
-    ///         (e.g. "swap on Aerodrome" or "supply to Aave").
+    ///         (e.g. "swap on Aerodrome" or "Moonwell liquidateBorrow").
     struct Call {
         address target;
         uint256 value;

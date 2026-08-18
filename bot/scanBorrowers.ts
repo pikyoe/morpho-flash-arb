@@ -1,33 +1,36 @@
 #!/usr/bin/env node
 /**
- * Discovers candidate Aave V3 Base borrowers and ranks them by health factor.
+ * Discovers candidate Moonwell Base borrowers and ranks them by Comptroller
+ * shortfall (USD, 18-dec). `shortfall > 0` means the account is liquidatable.
+ *
+ * Candidates come from a Moonwell subgraph (set MOONWELL_SUBGRAPH_URL, e.g. a
+ * Goldsky deployment; the query expects an `accounts` entity — adjust to your
+ * subgraph's schema if needed).
  *
  * Usage:
- *   npx tsx scanBorrowers.ts [--limit 200] [--threshold 1.05]
+ *   npx tsx scanBorrowers.ts [--limit 200] [--watchlist 5000]
  */
 import "dotenv/config";
 import { ethers } from "ethers";
 import { ADDRESSES } from "./addresses.js";
-import { AAVE_V3_POOL_ABI } from "./abi.js";
+import { MOONWELL_COMPTROLLER_ABI } from "./abi.js";
 import type { Address, HealthCheckResult } from "./types.js";
-
-const SUBGRAPH_ID = "GQFbb95cE6d8mV989mL5figjaGaKCQB3xqYrr1bRyXqF";
 
 interface Args {
   limit: number;
-  threshold: number;
+  watchlistUsd: number;
 }
 
 function parseArgs(): Args {
   const args = process.argv.slice(2);
-  const out: Args = { limit: 200, threshold: 1.05 };
+  const out: Args = { limit: 200, watchlistUsd: 5000 };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--limit") {
       const v = args[++i];
       if (v !== undefined) out.limit = parseInt(v, 10);
-    } else if (args[i] === "--threshold") {
+    } else if (args[i] === "--watchlist") {
       const v = args[++i];
-      if (v !== undefined) out.threshold = parseFloat(v);
+      if (v !== undefined) out.watchlistUsd = parseFloat(v);
     }
   }
   return out;
@@ -38,27 +41,18 @@ interface SubgraphUser {
 }
 
 interface SubgraphResponse {
-  data?: { users: SubgraphUser[] };
+  data?: { accounts: SubgraphUser[] };
   errors?: unknown;
 }
 
-async function fetchBorrowerCandidates(apiKey: string, limit: number): Promise<Address[]> {
-  const url = `https://gateway.thegraph.com/api/${apiKey}/subgraphs/id/${SUBGRAPH_ID}`;
-
+async function fetchBorrowerCandidates(subgraphUrl: string, limit: number): Promise<Address[]> {
   const query = `
     query BorrowCandidates($first: Int!) {
-      users(
-        first: $first
-        where: { borrowedReservesCount_gt: 0 }
-        orderBy: borrowedReservesCount
-        orderDirection: desc
-      ) {
-        id
-      }
+      accounts(first: $first) { id }
     }
   `;
 
-  const res = await fetch(url, {
+  const res = await fetch(subgraphUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query, variables: { first: Math.min(limit, 1000) } }),
@@ -76,14 +70,14 @@ async function fetchBorrowerCandidates(apiKey: string, limit: number): Promise<A
     throw new Error("Subgraph response missing 'data' field");
   }
 
-  return json.data.users.map((u) => u.id);
+  return json.data.accounts.map((u) => u.id);
 }
 
 async function checkHealthFactors(
   provider: ethers.JsonRpcProvider,
   addresses: Address[]
 ): Promise<HealthCheckResult[]> {
-  const pool = new ethers.Contract(ADDRESSES.AAVE_V3_POOL!, AAVE_V3_POOL_ABI, provider);
+  const comptroller = new ethers.Contract(ADDRESSES.MOONWELL_COMPTROLLER!, MOONWELL_COMPTROLLER_ABI, provider);
 
   const CONCURRENCY = 10;
   const results: HealthCheckResult[] = [];
@@ -93,11 +87,11 @@ async function checkHealthFactors(
     const batchResults = await Promise.all(
       batch.map(async (addr): Promise<HealthCheckResult> => {
         try {
-          const data = await pool.getUserAccountData!(addr);
+          const data = await comptroller.getAccountLiquidity!(addr);
           return {
             address: addr,
-            healthFactor: data.healthFactor as bigint,
-            collateralUsd: data.totalCollateralBase as bigint,
+            shortfall: data.shortfall as bigint,
+            liquidity: data.liquidity as bigint,
           };
         } catch (err) {
           return { address: addr, error: err instanceof Error ? err.message : String(err) };
@@ -113,9 +107,9 @@ async function checkHealthFactors(
 
 async function main(): Promise<void> {
   const args = parseArgs();
-  const apiKey = process.env.GRAPH_API_KEY;
-  if (!apiKey) {
-    throw new Error("Set GRAPH_API_KEY in your .env — get a free key at https://thegraph.com/studio");
+  const subgraphUrl = process.env.MOONWELL_SUBGRAPH_URL;
+  if (!subgraphUrl) {
+    throw new Error("Set MOONWELL_SUBGRAPH_URL in your .env (a Moonwell subgraph endpoint, e.g. Goldsky)");
   }
 
   const rpcUrl = process.env.BASE_RPC_URL || "https://mainnet.base.org";
@@ -125,45 +119,42 @@ async function main(): Promise<void> {
   });
 
   console.log(`Fetching up to ${args.limit} borrower candidates from the subgraph...`);
-  const candidates = await fetchBorrowerCandidates(apiKey, args.limit);
-  console.log(`Got ${candidates.length} candidates. Checking on-chain health factors...`);
+  const candidates = await fetchBorrowerCandidates(subgraphUrl, args.limit);
+  console.log(`Got ${candidates.length} candidates. Checking on-chain health (Comptroller.getAccountLiquidity)...`);
 
   const results = await checkHealthFactors(provider, candidates);
   console.error("");
 
-  const ONE = 1e18;
-  const thresholdWei = BigInt(Math.floor(args.threshold * ONE));
+  const watchlistUsdWei = BigInt(Math.floor(args.watchlistUsd * 1e18));
 
   const liquidatable: HealthCheckResult[] = [];
   const watchlist: HealthCheckResult[] = [];
 
   for (const r of results) {
-    if (r.error || r.healthFactor === undefined) continue;
-    if (r.healthFactor === 0n) continue;
-    if (r.healthFactor < BigInt(ONE)) {
+    if (r.error || r.shortfall === undefined) continue;
+    if (r.shortfall > 0n) {
       liquidatable.push(r);
-    } else if (r.healthFactor < thresholdWei) {
+    } else if ((r.liquidity ?? 0n) < watchlistUsdWei) {
       watchlist.push(r);
     }
   }
 
-  const byHealthFactor = (a: HealthCheckResult, b: HealthCheckResult): number =>
-    a.healthFactor! < b.healthFactor! ? -1 : 1;
+  const byShortfall = (a: HealthCheckResult, b: HealthCheckResult): number =>
+    a.shortfall! > b.shortfall! ? -1 : 1;
 
-  liquidatable.sort(byHealthFactor);
-  watchlist.sort(byHealthFactor);
+  liquidatable.sort(byShortfall);
+  watchlist.sort((a, b) => (a.liquidity! < b.liquidity! ? -1 : 1));
 
-  console.log(`\n=== LIQUIDATABLE NOW (healthFactor < 1.0) ===`);
+  console.log(`\n=== LIQUIDATABLE NOW (Comptroller shortfall > 0) ===`);
   if (liquidatable.length === 0) console.log("(none among checked candidates)");
   for (const r of liquidatable) {
-    console.log(`${r.address}  HF=${ethers.formatUnits(r.healthFactor!, 18)}`);
+    console.log(`${r.address}  shortfall=$${ethers.formatUnits(r.shortfall!, 18)}`);
   }
 
-  console.log(`\n=== WATCHLIST (1.0 <= healthFactor < ${args.threshold}) ===`);
+  console.log(`\n=== WATCHLIST (healthy, liquidity < $${args.watchlistUsd}) ===`);
   if (watchlist.length === 0) console.log("(none among checked candidates)");
   for (const r of watchlist) {
-    const collateral = r.collateralUsd !== undefined ? ethers.formatUnits(r.collateralUsd, 8) : "?";
-    console.log(`${r.address}  HF=${ethers.formatUnits(r.healthFactor!, 18)}  Collateral=$${collateral}`);
+    console.log(`${r.address}  liquidity=$${ethers.formatUnits(r.liquidity ?? 0n, 18)}`);
   }
 
   console.log(
