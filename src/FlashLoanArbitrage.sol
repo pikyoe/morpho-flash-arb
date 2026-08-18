@@ -8,6 +8,8 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 import {IMorpho, IMorphoFlashLoanCallback} from "./interfaces/IMorpho.sol";
+import {IAerodromeRouter} from "./interfaces/IAerodromeRouter.sol";
+import {IUniswapV3Router} from "./interfaces/IUniswapV3Router.sol";
 
 /// @title FlashLoanArbitrage
 /// @notice Flash-borrows an asset from Morpho Blue and executes a pre-approved
@@ -52,6 +54,7 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     error CallFailed(uint256 index, bytes returnData);
     error InvalidTarget(address target);
     error InvalidSelector(address target, bytes4 selector);
+    error InvalidRecipient(address recipient);
     error InvalidAmount(uint256 amount);
     error InvalidCallsLength(uint256 length);
     error InvalidMinProfit(uint256 minProfit);
@@ -81,13 +84,7 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
         if (minProfit == 0) revert InvalidMinProfit(minProfit);
 
         for (uint256 i = 0; i < calls.length; i++) {
-            bytes4 selector = _selector(calls[i].data);
-            if (!isTargetWhitelisted[calls[i].target]) {
-                revert InvalidTarget(calls[i].target);
-            }
-            if (!isCallWhitelisted[calls[i].target][selector]) {
-                revert InvalidSelector(calls[i].target, selector);
-            }
+            _validateCall(calls[i].target, calls[i].data);
         }
 
         // Snapshot the balance before the flash loan. Only balance gained during this
@@ -108,15 +105,7 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
             abi.decode(data, (address, Call[], uint256, address, uint256));
 
         for (uint256 i = 0; i < calls.length; i++) {
-            bytes4 selector = _selector(calls[i].data);
-            // Re-check inside the callback so the exact execution path is protected even
-            // if this function is ever refactored to receive callback data from elsewhere.
-            if (!isTargetWhitelisted[calls[i].target]) {
-                revert InvalidTarget(calls[i].target);
-            }
-            if (!isCallWhitelisted[calls[i].target][selector]) {
-                revert InvalidSelector(calls[i].target, selector);
-            }
+            _validateCall(calls[i].target, calls[i].data);
 
             (bool success, bytes memory ret) = calls[i].target.call{value: calls[i].value}(calls[i].data);
             if (!success) revert CallFailed(i, ret);
@@ -130,7 +119,11 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
 
         uint256 profit = balanceAfter - balanceBefore - assets;
 
+        // Repay Morpho exactly. Clear route approvals afterwards so a successful
+        // transaction never leaves an operator-selected spender with a persistent
+        // allowance over contract funds.
         IERC20(asset).forceApprove(address(morpho), assets);
+        _clearRouteApprovals(calls);
         IERC20(asset).safeTransfer(initiator, profit);
 
         emit ArbitrageExecuted(asset, assets, profit);
@@ -200,6 +193,64 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     function unpause() external onlyRole(ADMIN_ROLE) {
         _unpause();
         emit ContractUnpaused(msg.sender);
+    }
+
+    function _validateCall(address target, bytes memory data) internal view {
+        bytes4 selector = _selector(data);
+
+        if (!isTargetWhitelisted[target]) {
+            revert InvalidTarget(target);
+        }
+        if (!isCallWhitelisted[target][selector]) {
+            revert InvalidSelector(target, selector);
+        }
+
+        // approve() can otherwise grant an arbitrary address a persistent allowance.
+        // Only approved execution targets may receive allowances from the contract.
+        if (selector == IERC20.approve.selector) {
+            if (data.length < 68) revert InvalidSelector(target, selector);
+            (address spender,) = abi.decode(_withoutSelector(data), (address, uint256));
+            if (!isTargetWhitelisted[spender]) revert InvalidTarget(spender);
+            return;
+        }
+
+        // A swap must return proceeds to this contract. Otherwise an operator key
+        // compromise could redirect the entire swap output to an external address.
+        if (selector == IAerodromeRouter.swapExactTokensForTokens.selector) {
+            if (data.length < 4) revert InvalidSelector(target, selector);
+            (, , , address recipient,) = abi.decode(
+                _withoutSelector(data),
+                (uint256, uint256, IAerodromeRouter.Route[], address, uint256)
+            );
+            if (recipient != address(this)) revert InvalidRecipient(recipient);
+            return;
+        }
+
+        if (selector == IUniswapV3Router.exactInputSingle.selector) {
+            if (data.length < 4) revert InvalidSelector(target, selector);
+            IUniswapV3Router.ExactInputSingleParams memory params =
+                abi.decode(_withoutSelector(data), (IUniswapV3Router.ExactInputSingleParams));
+            if (params.recipient != address(this)) revert InvalidRecipient(params.recipient);
+        }
+    }
+
+    function _clearRouteApprovals(Call[] memory calls) internal {
+        for (uint256 i = 0; i < calls.length; i++) {
+            if (_selector(calls[i].data) != IERC20.approve.selector) continue;
+            (address spender,) = abi.decode(_withoutSelector(calls[i].data), (address, uint256));
+            IERC20(calls[i].target).forceApprove(spender, 0);
+        }
+    }
+
+    function _withoutSelector(bytes memory data) internal pure returns (bytes memory result) {
+        uint256 len = data.length;
+        if (len < 4) return bytes("");
+        result = new bytes(len - 4);
+        assembly {
+            let src := add(data, 36)
+            let dst := add(result, 32)
+            mcopy(dst, src, sub(len, 4))
+        }
     }
 
     function _selector(bytes memory data) internal pure returns (bytes4 selector) {
