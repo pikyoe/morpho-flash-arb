@@ -115,7 +115,7 @@ contract SetupLiquidatablePosition is Script, StdCheats {
             console.log(testBorrower);
             console.log("Debt: USDC, Collateral: WETH");
         } else {
-            console.log("Position still healthy — increase PRICE_CRASH_BPS or borrowed amount and re-run.");
+            console.log("Position still healthy -- increase PRICE_CRASH_BPS or borrowed amount and re-run.");
         }
     }
 }

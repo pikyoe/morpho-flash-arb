@@ -11,7 +11,7 @@ via_ir = false
 evm_version = "cancun"
 
 # Base mainnet (chain id 8453)
-[profile.default.rpc_endpoints]
+[rpc_endpoints]
 base = "${BASE_RPC_URL}"
 
 # Remappings for forge-std and OpenZeppelin
