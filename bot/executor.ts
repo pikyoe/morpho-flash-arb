@@ -15,10 +15,11 @@
  *     balance cap) and flash exactly what Moonwell pulls.
  *
  *  2. Liquidation parameters read on-chain — no more guessing BPS. The
- *     Comptroller exposes closeFactorMantissa() (0.5e18), liquidationIncentive-
- *     Mantissa() (1.10e18) and protocolSeizeShareMantissa() (0.03e18) — the
- *     protocol keeps 3% of the gross seized collateral, so the liquidator nets
- *     ~7% of the 10% bonus.
+ *     Comptroller exposes closeFactorMantissa() (0.5e18) and liquidationIncentive-
+ *     Mantissa() (1.10e18); the protocol's 3% seize share is read per-market from
+ *     the COLLATERAL mToken (protocolSeizeShareMantissa() = 0.03e18 — verified on
+ *     Base; the Comptroller itself does not expose it). The protocol keeps 3% of
+ *     the gross seized collateral, so the liquidator nets ~7% of the 10% bonus.
  *
  *  3. Slippage-protected DEX exit with multi-hop routing (direct pool, then via
  *     WETH or USDC bridge), and an on-chain minProfit guard that can never be 0
@@ -74,6 +75,19 @@ const HF_ONE = 10n ** 18n;
 const BPS = 10000n;
 /** Moonwell Base: the protocol keeps 3% of gross seized collateral (0.03e18). */
 const DEFAULT_PROTOCOL_SEIZE_SHARE = 3n * 10n ** 16n;
+/**
+ * Read the protocol's share of seized collateral from the collateral mToken
+ * (per-market). Falls back to the verified 0.03e18 Base default if a market
+ * does not expose the getter.
+ */
+async function readProtocolSeizeShare(market: ethers.Contract): Promise<bigint> {
+  try {
+    const share = (await market.protocolSeizeShareMantissa!()) as bigint;
+    return share > 0n ? share : DEFAULT_PROTOCOL_SEIZE_SHARE;
+  } catch {
+    return DEFAULT_PROTOCOL_SEIZE_SHARE;
+  }
+}
 /** Placeholder swap recipient used only for dry-run routes before the contract is deployed. */
 const PLACEHOLDER = "0x0000000000000000000000000000000000000001";
 
@@ -220,7 +234,6 @@ export class LiquidationExecutor {
   /** Governance params, cached at startup (change rarely). */
   closeFactor = 5n * 10n ** 17n; // 0.5e18
   liquidationIncentive = 11n * 10n ** 17n; // 1.10e18
-  protocolSeizeShare = DEFAULT_PROTOCOL_SEIZE_SHARE; // 0.03e18
 
   /** Circuit breaker: flips after maxConsecutiveFailures live failures. */
   paused = false;
@@ -284,11 +297,6 @@ export class LiquidationExecutor {
       this.liquidationIncentive = inc;
     } catch (err) {
       log(`[warn] could not read Comptroller params (${msg(err)}) — using defaults`);
-    }
-    try {
-      this.protocolSeizeShare = (await this.comptroller.protocolSeizeShareMantissa!()) as bigint;
-    } catch {
-      log(`[warn] protocolSeizeShareMantissa not exposed — assuming ${DEFAULT_PROTOCOL_SEIZE_SHARE}`);
     }
   }
 
@@ -465,8 +473,10 @@ export class LiquidationExecutor {
     }
 
     // Protocol keeps `protocolSeizeShare` of the gross seized mTokens; the
-    // liquidator sells the rest on the DEX.
-    const protocolSeizeTokens = (grossSeizeTokens * this.protocolSeizeShare) / HF_ONE;
+    // liquidator sells the rest on the DEX. The share is per-market, read from
+    // the COLLATERAL mToken (the Comptroller does not expose it on Base).
+    const protocolSeizeShare = await readProtocolSeizeShare(market);
+    const protocolSeizeTokens = (grossSeizeTokens * protocolSeizeShare) / HF_ONE;
     const liquidatorSeizeTokens = grossSeizeTokens - protocolSeizeTokens;
 
     const collateralAmount = (grossSeizeTokens * exchangeRate) / HF_ONE; // gross underlying seized

@@ -325,7 +325,7 @@ already returns the approve+liquidate pair — use it as the first two entries.)
 | --- | --- | --- |
 | Close factor (max repayable share) | `0.5e18` (50%) | `comptroller.closeFactorMantissa()` |
 | Liquidation incentive | `1.10e18` (10% bonus) | `comptroller.liquidationIncentiveMantissa()` |
-| Liquidator keeps | ~7% of gross (10% − 3% protocol share) | `comptroller.protocolSeizeShareMantissa()` (fallback `0.03e18`) |
+| Liquidator keeps | ~7% of gross (10% − 3% protocol share) | `mTokenCollateral.protocolSeizeShareMantissa()` (`0.03e18`, verified on Base — the Comptroller does not expose it) |
 | Position health | `shortfall > 0` ⇒ liquidatable | `comptroller.getAccountLiquidity(user)` → `(error, liquidity, shortfall)` |
 | Borrow balance / exchange rate | 18-dec mantissas | `mToken.borrowBalanceStored(user)`, `mToken.exchangeRateStored()` |
 

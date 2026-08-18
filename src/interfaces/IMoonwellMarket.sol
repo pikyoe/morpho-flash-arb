@@ -32,6 +32,12 @@ interface IMoonwellMarket {
     ///         underlying (18-decimal mantissa). Grows as interest accrues.
     function exchangeRateStored() external view returns (uint256);
 
+    /// @notice Share of gross seized collateral kept by the Moonwell protocol
+    ///         reserves (0.03e18 on Moonwell Base → the liquidator nets 7% of the
+    ///         10% liquidation incentive). Stored per-market on the mToken — the
+    ///         Comptroller does NOT expose it (verified on Base, Aug 2026).
+    function protocolSeizeShareMantissa() external view returns (uint256);
+
     /// @notice A borrower's borrow balance in underlying, without accruing interest.
     function borrowBalanceStored(address account) external view returns (uint256);
 

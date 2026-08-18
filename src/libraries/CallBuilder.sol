@@ -185,7 +185,8 @@ library CallBuilder {
     ///        (both in the same 18-decimal mantissa).
     /// @param exchangeRateCollateral `mTokenCollateral.exchangeRateStored()` (18-dec).
     /// @param liquidationIncentiveMantissa e.g. 1.10e18 on Moonwell Base.
-    /// @param protocolSeizeShareMantissa e.g. 0.03e18 on Moonwell Base.
+    /// @param protocolSeizeShareMantissa The protocol's per-market seize share,
+    ///        read from the COLLATERAL mToken (`0.03e18` on Moonwell Base).
     /// @return liquidatorUnderlying Net collateral, denominated in the collateral
     ///         underlying token (what the DEX leg must sell).
     function estimateMoonwellSeizedUnderlying(

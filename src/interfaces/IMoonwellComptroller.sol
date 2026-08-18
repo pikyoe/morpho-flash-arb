@@ -18,17 +18,21 @@ interface IMoonwellComptroller {
     function closeFactorMantissa() external view returns (uint256);
 
     /// @notice Liquidation incentive mantissa (1.10e18 on Moonwell Base = a 10%
-    ///         bonus on the collateral seized; the protocol keeps ~3% of that,
-    ///         see `protocolSeizeShareMantissa`).
+    ///         bonus on the gross seized collateral). The protocol's share of the
+    ///         seized collateral is NOT here — it lives per-market on the mToken
+    ///         (`IMoonwellMarket.protocolSeizeShareMantissa()`, 0.03e18 on Base),
+    ///         so the liquidator nets ~7% of the 10% bonus.
     function liquidationIncentiveMantissa() external view returns (uint256);
 
-    /// @notice Share of gross seized collateral kept by the protocol reserves
-    ///         (0.03e18 on Moonwell Base → liquidator keeps 7% of the 10% bonus).
-    ///         @dev May revert on older Moonwell deployments — off-chain tooling
-    ///              should fall back to a hardcoded 0.03e18 if this call fails.
-    function protocolSeizeShareMantissa() external view returns (uint256);
-
     /// @notice Whether `mToken` is listed as a market and its collateral factor.
+    /// @dev ABI verified against the DEPLOYED Base Comptroller (Aug 2026): the
+    ///      getter returns exactly TWO words — `(bool, uint256)` — so there is
+    ///      no `isComped` (standard Compound v2.8+) and no `isWelled` (Moonwell
+    ///      master source) in the deployed Market struct. The struct's third
+    ///      member is the `accountMembership` mapping, which public getters skip.
+    ///      If Moonwell later upgrades the Comptroller to the master storage
+    ///      (adding `isWelled`), this getter will return three words — update the
+    ///      interface and the bot then.
     function markets(address mToken)
         external
         view

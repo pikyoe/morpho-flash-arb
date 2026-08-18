@@ -2,7 +2,6 @@ export const MOONWELL_COMPTROLLER_ABI: string[] = [
   "function getAccountLiquidity(address account) view returns (uint256 error, uint256 liquidity, uint256 shortfall)",
   "function closeFactorMantissa() view returns (uint256)",
   "function liquidationIncentiveMantissa() view returns (uint256)",
-  "function protocolSeizeShareMantissa() view returns (uint256)",
   "function oracle() view returns (address)",
 ];
 
@@ -13,6 +12,7 @@ export const MOONWELL_MARKET_ABI: string[] = [
   "function borrowBalanceStored(address account) view returns (uint256)",
   "function underlying() view returns (address)",
   "function balanceOf(address) view returns (uint256)",
+  "function protocolSeizeShareMantissa() view returns (uint256)",
   "event Borrow(address borrower, uint256 borrowAmount, uint256 accountBorrows, uint256 totalBorrows)",
 ];
 
