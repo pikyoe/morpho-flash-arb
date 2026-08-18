@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Test, console} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {AccessControlUnauthorizedAccount} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {FlashLoanArbitrage} from "../src/FlashLoanArbitrage.sol";
 import {BaseAddresses} from "../src/BaseAddresses.sol";
 
@@ -16,10 +17,19 @@ contract SecurityHardeningTest is Test {
     address internal constant WETH = BaseAddresses.WETH;
     address internal constant MORPHO = BaseAddresses.MORPHO_BLUE;
 
+    bytes32 internal operatorRole;
+    bytes32 internal pauserRole;
+    bytes32 internal adminRole;
+
     function setUp() public {
         string memory rpcUrl = vm.envOr("BASE_RPC_URL", string("https://mainnet.base.org"));
         vm.createSelectFork(rpcUrl);
         arb = new FlashLoanArbitrage(MORPHO, admin);
+
+        operatorRole = arb.OPERATOR_ROLE();
+        pauserRole = arb.PAUSER_ROLE();
+        adminRole = arb.ADMIN_ROLE();
+
         address[] memory initialTargets = new address[](5);
         initialTargets[0] = BaseAddresses.MOONWELL_M_USDC;
         initialTargets[1] = BaseAddresses.AERODROME_ROUTER;
@@ -27,8 +37,8 @@ contract SecurityHardeningTest is Test {
         initialTargets[3] = BaseAddresses.WETH;
         initialTargets[4] = BaseAddresses.USDC;
         arb.batchAddTargetsToWhitelist(initialTargets);
-        arb.grantRole(arb.OPERATOR_ROLE(), operator);
-        arb.grantRole(arb.PAUSER_ROLE(), pauser);
+        arb.grantRole(operatorRole, operator);
+        arb.grantRole(pauserRole, pauser);
     }
 
     function test_OperatorCannotWithdrawTokens() public {
@@ -46,8 +56,15 @@ contract SecurityHardeningTest is Test {
 
     function test_OperatorCannotGrantRoles() public {
         vm.prank(operator);
-        vm.expectRevert();
-        arb.grantRole(arb.OPERATOR_ROLE(), attacker);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                AccessControlUnauthorizedAccount.selector,
+                operator,
+                arb.DEFAULT_ADMIN_ROLE()
+            )
+        );
+        arb.grantRole(operatorRole, attacker);
+        assertFalse(arb.hasRole(operatorRole, attacker));
     }
 
     function test_PauserCannotExecuteArbitrage() public {
@@ -132,9 +149,9 @@ contract SecurityHardeningTest is Test {
     }
 
     function test_AdminCanRevokeOperatorRole() public {
-        assertTrue(arb.hasRole(arb.OPERATOR_ROLE(), operator));
-        arb.revokeRole(arb.OPERATOR_ROLE(), operator);
-        assertFalse(arb.hasRole(arb.OPERATOR_ROLE(), operator));
+        assertTrue(arb.hasRole(operatorRole, operator));
+        arb.revokeRole(operatorRole, operator);
+        assertFalse(arb.hasRole(operatorRole, operator));
         FlashLoanArbitrage.Call[] memory calls = new FlashLoanArbitrage.Call[](1);
         calls[0] = FlashLoanArbitrage.Call({target: BaseAddresses.WETH, value: 0, data: abi.encodeWithSignature("approve(address,uint256)", BaseAddresses.AERODROME_ROUTER, 1 ether)});
         vm.prank(operator);
@@ -143,29 +160,37 @@ contract SecurityHardeningTest is Test {
     }
 
     function test_AdminCanRevokePauserRole() public {
-        assertTrue(arb.hasRole(arb.PAUSER_ROLE(), pauser));
-        arb.revokeRole(arb.PAUSER_ROLE(), pauser);
-        assertFalse(arb.hasRole(arb.PAUSER_ROLE(), pauser));
+        assertTrue(arb.hasRole(pauserRole, pauser));
+        arb.revokeRole(pauserRole, pauser);
+        assertFalse(arb.hasRole(pauserRole, pauser));
         vm.prank(pauser);
         vm.expectRevert();
         arb.pause();
     }
 
     function test_SecurityScenario_AttackerGainsAccess() public {
-        assertFalse(arb.hasRole(arb.OPERATOR_ROLE(), attacker));
+        assertFalse(arb.hasRole(operatorRole, attacker));
         vm.prank(attacker);
-        vm.expectRevert();
-        arb.grantRole(arb.OPERATOR_ROLE(), attacker);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                AccessControlUnauthorizedAccount.selector,
+                attacker,
+                arb.DEFAULT_ADMIN_ROLE()
+            )
+        );
+        arb.grantRole(operatorRole, attacker);
+        assertFalse(arb.hasRole(operatorRole, attacker));
+
         // Simulate an administrator compromise explicitly: the admin grants the role.
-        arb.grantRole(arb.OPERATOR_ROLE(), attacker);
-        assertTrue(arb.hasRole(arb.OPERATOR_ROLE(), attacker));
-        arb.revokeRole(arb.OPERATOR_ROLE(), attacker);
-        assertFalse(arb.hasRole(arb.OPERATOR_ROLE(), attacker));
-        assertTrue(arb.hasRole(arb.ADMIN_ROLE(), admin));
+        arb.grantRole(operatorRole, attacker);
+        assertTrue(arb.hasRole(operatorRole, attacker));
+        arb.revokeRole(operatorRole, attacker);
+        assertFalse(arb.hasRole(operatorRole, attacker));
+        assertTrue(arb.hasRole(adminRole, admin));
     }
 
     function test_SecurityScenario_EmergencyWithCompromisedOperator() public {
-        arb.grantRole(arb.OPERATOR_ROLE(), attacker);
+        arb.grantRole(operatorRole, attacker);
         vm.prank(pauser);
         arb.pause();
         FlashLoanArbitrage.Call[] memory calls = new FlashLoanArbitrage.Call[](1);
@@ -173,9 +198,9 @@ contract SecurityHardeningTest is Test {
         vm.prank(attacker);
         vm.expectRevert();
         arb.executeArbitrage(WETH, 1 ether, calls, 1);
-        arb.revokeRole(arb.OPERATOR_ROLE(), attacker);
+        arb.revokeRole(operatorRole, attacker);
         arb.unpause();
         assertFalse(arb.paused());
-        assertFalse(arb.hasRole(arb.OPERATOR_ROLE(), attacker));
+        assertFalse(arb.hasRole(operatorRole, attacker));
     }
 }
