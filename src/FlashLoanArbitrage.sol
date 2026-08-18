@@ -113,7 +113,7 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
         
         // Validate all call targets are whitelisted
         for (uint256 i = 0; i < calls.length; i++) {
-            if (!isTargetWhitelisted(calls[i].target)) {
+            if (!isTargetWhitelisted[calls[i].target]) {
                 revert InvalidTarget(calls[i].target);
             }
         }

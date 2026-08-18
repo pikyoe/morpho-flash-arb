@@ -16,7 +16,7 @@ import {FlashLoanArbitrage} from "../src/FlashLoanArbitrage.sol";
 ///           --broadcast \
 ///           -vvvv
 contract SetupRoles is Script {
-    function run() {
+    function run() external {
         uint256 adminKey = vm.envUint("PRIVATE_KEY");
         address arbAddress = vm.envAddress("ARBITRAGE_CONTRACT_ADDRESS");
         address operator = vm.envAddress("OPERATOR_ADDRESS");
