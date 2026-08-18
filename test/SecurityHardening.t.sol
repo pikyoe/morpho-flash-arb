@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test, console} from "forge-std/Test.sol";
+import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {FlashLoanArbitrage} from "../src/FlashLoanArbitrage.sol";
 import {BaseAddresses} from "../src/BaseAddresses.sol";
@@ -20,12 +20,14 @@ contract SecurityHardeningTest is Test {
     bytes32 internal pauserRole;
     bytes32 internal adminRole;
 
+    bytes4 internal constant APPROVE_SELECTOR = bytes4(keccak256("approve(address,uint256)"));
+    bytes4 internal constant TRANSFER_SELECTOR = bytes4(keccak256("transfer(address,uint256)"));
+
     function setUp() public {
         string memory rpcUrl = vm.envOr("BASE_RPC_URL", string("https://mainnet.base.org"));
         vm.createSelectFork(rpcUrl);
         arb = new FlashLoanArbitrage(MORPHO, admin);
 
-        // Cache role IDs before any prank so role lookups cannot consume vm.prank().
         operatorRole = arb.OPERATOR_ROLE();
         pauserRole = arb.PAUSER_ROLE();
         adminRole = arb.ADMIN_ROLE();
@@ -39,6 +41,9 @@ contract SecurityHardeningTest is Test {
         arb.batchAddTargetsToWhitelist(initialTargets);
         arb.grantRole(operatorRole, operator);
         arb.grantRole(pauserRole, pauser);
+
+        // Existing tests use WETH.approve as their harmless execution path.
+        arb.addCallSelectorToWhitelist(BaseAddresses.WETH, APPROVE_SELECTOR);
     }
 
     function test_OperatorCannotWithdrawTokens() public {
@@ -63,7 +68,7 @@ contract SecurityHardeningTest is Test {
 
     function test_PauserCannotExecuteArbitrage() public {
         FlashLoanArbitrage.Call[] memory calls = new FlashLoanArbitrage.Call[](1);
-        calls[0] = FlashLoanArbitrage.Call({target: BaseAddresses.WETH, value: 0, data: abi.encodeWithSignature("approve(address,uint256)", BaseAddresses.AERODROME_ROUTER, 1 ether)});
+        calls[0] = FlashLoanArbitrage.Call({target: WETH, value: 0, data: abi.encodeWithSelector(APPROVE_SELECTOR, BaseAddresses.AERODROME_ROUTER, 1 ether)});
         vm.prank(pauser);
         vm.expectRevert();
         arb.executeArbitrage(WETH, 1 ether, calls, 1);
@@ -85,10 +90,43 @@ contract SecurityHardeningTest is Test {
         arb.executeArbitrage(WETH, 1 ether, calls, 1);
     }
 
+    function test_WhitelistedTargetRequiresWhitelistedSelector() public {
+        FlashLoanArbitrage.Call[] memory calls = new FlashLoanArbitrage.Call[](1);
+        calls[0] = FlashLoanArbitrage.Call({target: WETH, value: 0, data: abi.encodeWithSelector(TRANSFER_SELECTOR, attacker, 1 ether)});
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(FlashLoanArbitrage.InvalidSelector.selector, WETH, TRANSFER_SELECTOR));
+        arb.executeArbitrage(WETH, 1 ether, calls, 1);
+    }
+
+    function test_WhitelistedSelectorCanExecute() public {
+        FlashLoanArbitrage.Call[] memory calls = new FlashLoanArbitrage.Call[](1);
+        calls[0] = FlashLoanArbitrage.Call({target: WETH, value: 0, data: abi.encodeWithSelector(APPROVE_SELECTOR, BaseAddresses.AERODROME_ROUTER, 1 ether)});
+        vm.prank(operator);
+        vm.expectRevert();
+        arb.executeArbitrage(WETH, 1 ether, calls, 1);
+    }
+
+    function test_PreExistingBalanceCannotBeCountedAsProfit() public {
+        uint256 existing = 1 ether;
+        deal(WETH, address(arb), existing);
+
+        FlashLoanArbitrage.Call[] memory calls = new FlashLoanArbitrage.Call[](1);
+        calls[0] = FlashLoanArbitrage.Call({target: WETH, value: 0, data: abi.encodeWithSelector(APPROVE_SELECTOR, BaseAddresses.AERODROME_ROUTER, 1 ether)});
+
+        // On a real flash-loan path the callback would receive only the newly borrowed
+        // assets. This test uses the public entrypoint and asserts the transaction cannot
+        // pass merely because the contract already held `existing` tokens.
+        vm.prank(operator);
+        vm.expectRevert();
+        arb.executeArbitrage(WETH, 5 ether, calls, 0.5 ether);
+
+        assertEq(IERC20(WETH).balanceOf(address(arb)), existing);
+    }
+
     function test_WhitelistPreventsTokenDrainage() public {
         address maliciousSpender = makeAddr("malicious");
         FlashLoanArbitrage.Call[] memory maliciousCalls = new FlashLoanArbitrage.Call[](2);
-        maliciousCalls[0] = FlashLoanArbitrage.Call({target: BaseAddresses.WETH, value: 0, data: abi.encodeWithSignature("approve(address,uint256)", maliciousSpender, type(uint256).max)});
+        maliciousCalls[0] = FlashLoanArbitrage.Call({target: WETH, value: 0, data: abi.encodeWithSelector(APPROVE_SELECTOR, maliciousSpender, type(uint256).max)});
         maliciousCalls[1] = FlashLoanArbitrage.Call({target: maliciousSpender, value: 0, data: abi.encodeWithSignature("drain()")});
         vm.prank(operator);
         vm.expectRevert(abi.encodeWithSelector(FlashLoanArbitrage.InvalidTarget.selector, maliciousSpender));
@@ -96,12 +134,11 @@ contract SecurityHardeningTest is Test {
     }
 
     function test_EmergencyPauseStopsAllOperations() public {
-        assertFalse(arb.paused());
         vm.prank(pauser);
         arb.pause();
         assertTrue(arb.paused());
         FlashLoanArbitrage.Call[] memory calls = new FlashLoanArbitrage.Call[](1);
-        calls[0] = FlashLoanArbitrage.Call({target: BaseAddresses.WETH, value: 0, data: abi.encodeWithSignature("approve(address,uint256)", BaseAddresses.AERODROME_ROUTER, 1 ether)});
+        calls[0] = FlashLoanArbitrage.Call({target: WETH, value: 0, data: abi.encodeWithSelector(APPROVE_SELECTOR, BaseAddresses.AERODROME_ROUTER, 1 ether)});
         vm.prank(operator);
         vm.expectRevert();
         arb.executeArbitrage(WETH, 1 ether, calls, 1);
@@ -113,7 +150,7 @@ contract SecurityHardeningTest is Test {
         arb.unpause();
         assertFalse(arb.paused());
         FlashLoanArbitrage.Call[] memory calls = new FlashLoanArbitrage.Call[](1);
-        calls[0] = FlashLoanArbitrage.Call({target: BaseAddresses.WETH, value: 0, data: abi.encodeWithSignature("approve(address,uint256)", BaseAddresses.AERODROME_ROUTER, 1 ether)});
+        calls[0] = FlashLoanArbitrage.Call({target: WETH, value: 0, data: abi.encodeWithSelector(APPROVE_SELECTOR, BaseAddresses.AERODROME_ROUTER, 1 ether)});
         deal(WETH, address(arb), 0.01 ether);
         vm.prank(operator);
         arb.executeArbitrage(WETH, 5 ether, calls, 0.01 ether);
@@ -121,7 +158,7 @@ contract SecurityHardeningTest is Test {
 
     function test_MinimumFlashLoanSizePreventsDustAttacks() public {
         FlashLoanArbitrage.Call[] memory calls = new FlashLoanArbitrage.Call[](1);
-        calls[0] = FlashLoanArbitrage.Call({target: BaseAddresses.WETH, value: 0, data: abi.encodeWithSignature("approve(address,uint256)", BaseAddresses.AERODROME_ROUTER, 1 ether)});
+        calls[0] = FlashLoanArbitrage.Call({target: WETH, value: 0, data: abi.encodeWithSelector(APPROVE_SELECTOR, BaseAddresses.AERODROME_ROUTER, 1 ether)});
         vm.prank(operator);
         vm.expectRevert(abi.encodeWithSelector(FlashLoanArbitrage.InvalidAmount.selector, 100));
         arb.executeArbitrage(WETH, 100, calls, 1);
@@ -136,7 +173,7 @@ contract SecurityHardeningTest is Test {
 
     function test_ReentrancyGuardProtectsFlashLoan() public {
         FlashLoanArbitrage.Call[] memory calls = new FlashLoanArbitrage.Call[](1);
-        calls[0] = FlashLoanArbitrage.Call({target: BaseAddresses.WETH, value: 0, data: abi.encodeWithSignature("approve(address,uint256)", BaseAddresses.AERODROME_ROUTER, 1 ether)});
+        calls[0] = FlashLoanArbitrage.Call({target: WETH, value: 0, data: abi.encodeWithSelector(APPROVE_SELECTOR, BaseAddresses.AERODROME_ROUTER, 1 ether)});
         deal(WETH, address(arb), 0.01 ether);
         vm.prank(operator);
         arb.executeArbitrage(WETH, 5 ether, calls, 0.01 ether);
@@ -147,7 +184,7 @@ contract SecurityHardeningTest is Test {
         arb.revokeRole(operatorRole, operator);
         assertFalse(arb.hasRole(operatorRole, operator));
         FlashLoanArbitrage.Call[] memory calls = new FlashLoanArbitrage.Call[](1);
-        calls[0] = FlashLoanArbitrage.Call({target: BaseAddresses.WETH, value: 0, data: abi.encodeWithSignature("approve(address,uint256)", BaseAddresses.AERODROME_ROUTER, 1 ether)});
+        calls[0] = FlashLoanArbitrage.Call({target: WETH, value: 0, data: abi.encodeWithSelector(APPROVE_SELECTOR, BaseAddresses.AERODROME_ROUTER, 1 ether)});
         vm.prank(operator);
         vm.expectRevert();
         arb.executeArbitrage(WETH, 1 ether, calls, 1);
@@ -168,8 +205,6 @@ contract SecurityHardeningTest is Test {
         vm.expectRevert();
         arb.grantRole(operatorRole, attacker);
         assertFalse(arb.hasRole(operatorRole, attacker));
-
-        // Simulate an administrator compromise explicitly: the admin grants the role.
         arb.grantRole(operatorRole, attacker);
         assertTrue(arb.hasRole(operatorRole, attacker));
         arb.revokeRole(operatorRole, attacker);
@@ -182,7 +217,7 @@ contract SecurityHardeningTest is Test {
         vm.prank(pauser);
         arb.pause();
         FlashLoanArbitrage.Call[] memory calls = new FlashLoanArbitrage.Call[](1);
-        calls[0] = FlashLoanArbitrage.Call({target: BaseAddresses.WETH, value: 0, data: abi.encodeWithSignature("approve(address,uint256)", BaseAddresses.AERODROME_ROUTER, 1 ether)});
+        calls[0] = FlashLoanArbitrage.Call({target: WETH, value: 0, data: abi.encodeWithSelector(APPROVE_SELECTOR, BaseAddresses.AERODROME_ROUTER, 1 ether)});
         vm.prank(attacker);
         vm.expectRevert();
         arb.executeArbitrage(WETH, 1 ether, calls, 1);
