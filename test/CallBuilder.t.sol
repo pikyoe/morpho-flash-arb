@@ -21,20 +21,12 @@ contract CallBuilderTest is Test {
     address poolFactory = address(0x4444);
     address recipient = address(0x5555);
 
-    // --- approve ---
-
-    function test_approve_encodesCorrectly() public pure {
+    function test_approve_encodesCorrectly() public view {
         FlashLoanArbitrage.Call memory call = CallBuilder.approve(token, spender, 1 ether);
-
         assertEq(call.target, token);
         assertEq(call.value, 0);
-        assertEq(
-            call.data,
-            abi.encodeCall(IERC20.approve, (spender, 1 ether))
-        );
+        assertEq(call.data, abi.encodeCall(IERC20.approve, (spender, 1 ether)));
     }
-
-    // --- aerodromeSwap ---
 
     function test_aerodromeSwap_encodesCorrectly() public view {
         uint256 amountIn = 1000e18;
@@ -58,7 +50,6 @@ contract CallBuilderTest is Test {
             stable: stable,
             factory: poolFactory
         });
-
         assertEq(
             call.data,
             abi.encodeCall(
@@ -67,8 +58,6 @@ contract CallBuilderTest is Test {
             )
         );
     }
-
-    // --- moonwellLiquidateBorrow ---
 
     function test_moonwellLiquidateBorrow_encodesCorrectly() public pure {
         address mTokenDebt = BaseAddresses.MOONWELL_M_USDC;
@@ -83,14 +72,9 @@ contract CallBuilderTest is Test {
         assertEq(call.value, 0);
         assertEq(
             call.data,
-            abi.encodeCall(
-                IMoonwellMarket.liquidateBorrow,
-                (borrower, repayAmount, mTokenCollateral)
-            )
+            abi.encodeCall(IMoonwellMarket.liquidateBorrow, (borrower, repayAmount, mTokenCollateral))
         );
     }
-
-    // --- moonwellLiquidationLeg (standard 2-call pair) ---
 
     function test_moonwellLiquidationLeg_returns2Calls() public pure {
         address debtUnderlying = BaseAddresses.USDC;
@@ -103,28 +87,16 @@ contract CallBuilderTest is Test {
             CallBuilder.moonwellLiquidationLeg(debtUnderlying, mTokenDebt, borrower, repayAmount, mTokenCollateral);
 
         assertEq(calls.length, 2);
-
-        // First call: approve
         assertEq(calls[0].target, debtUnderlying);
         assertEq(calls[0].value, 0);
-        assertEq(
-            calls[0].data,
-            abi.encodeCall(IERC20.approve, (mTokenDebt, repayAmount))
-        );
-
-        // Second call: liquidateBorrow
+        assertEq(calls[0].data, abi.encodeCall(IERC20.approve, (mTokenDebt, repayAmount)));
         assertEq(calls[1].target, mTokenDebt);
         assertEq(calls[1].value, 0);
         assertEq(
             calls[1].data,
-            abi.encodeCall(
-                IMoonwellMarket.liquidateBorrow,
-                (borrower, repayAmount, mTokenCollateral)
-            )
+            abi.encodeCall(IMoonwellMarket.liquidateBorrow, (borrower, repayAmount, mTokenCollateral))
         );
     }
-
-    // --- moonwellOevLiquidationLeg (OEV 2-call pair) ---
 
     function test_moonwellOevLiquidationLeg_returns2Calls() public pure {
         address debtUnderlying = BaseAddresses.USDC;
@@ -139,16 +111,9 @@ contract CallBuilderTest is Test {
         );
 
         assertEq(calls.length, 2);
-
-        // First: approve debt to wrapper
         assertEq(calls[0].target, debtUnderlying);
         assertEq(calls[0].value, 0);
-        assertEq(
-            calls[0].data,
-            abi.encodeCall(IERC20.approve, (oevWrapper, repayAmount))
-        );
-
-        // Second: wrapper.updatePriceEarlyAndLiquidate
+        assertEq(calls[0].data, abi.encodeCall(IERC20.approve, (oevWrapper, repayAmount)));
         assertEq(calls[1].target, oevWrapper);
         assertEq(calls[1].value, 0);
         assertEq(
@@ -160,28 +125,17 @@ contract CallBuilderTest is Test {
         );
     }
 
-    // --- moonwellRedeem ---
-
     function test_moonwellRedeem_encodesCorrectly() public pure {
         address mToken = BaseAddresses.MOONWELL_M_WETH;
         uint256 redeemTokens = 1e18;
 
         FlashLoanArbitrage.Call memory call = CallBuilder.moonwellRedeem(mToken, redeemTokens);
-
         assertEq(call.target, mToken);
         assertEq(call.value, 0);
-        assertEq(
-            call.data,
-            abi.encodeCall(IMoonwellMarket.redeem, (redeemTokens))
-        );
+        assertEq(call.data, abi.encodeCall(IMoonwellMarket.redeem, (redeemTokens)));
     }
 
-    // --- estimateMoonwellSeizedUnderlying ---
-
     function test_estimateMoonwellSeizedUnderlying_basicCase() public pure {
-        // Setup: repay 10,000 USDC, borrowed price = 1e18, collateral price = 3000e18
-        // exchange rate = 1.02e18 (1 mWETH = 1.02 WETH)
-        // incentive = 1.10e18 (10%), protocol share = 0.03e18 (3%)
         uint256 repayAmount = 10_000e6;
         uint256 priceBorrowed = 1e18;
         uint256 priceCollateral = 3000e18;
@@ -190,12 +144,8 @@ contract CallBuilderTest is Test {
         uint256 protocolSeizeShare = 0.03e18;
 
         uint256 seized = CallBuilder.estimateMoonwellSeizedUnderlying(
-            repayAmount,
-            priceBorrowed,
-            priceCollateral,
-            exchangeRateCollateral,
-            liquidationIncentive,
-            protocolSeizeShare
+            repayAmount, priceBorrowed, priceCollateral, exchangeRateCollateral,
+            liquidationIncentive, protocolSeizeShare
         );
 
         assertTrue(seized > 0, "Should seize some collateral");
