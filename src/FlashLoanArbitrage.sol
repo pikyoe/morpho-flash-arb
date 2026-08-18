@@ -62,10 +62,10 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
 
     event ArbitrageExecuted(address indexed asset, uint256 amountBorrowed, uint256 profit);
     event ProfitWithdrawn(address indexed asset, address indexed to, uint256 amount);
+    event ETHWithdrawn(address indexed to, uint256 amount);
     event TargetWhitelisted(address indexed target, bool whitelisted);
     event ContractPaused(address indexed pauser);
     event ContractUnpaused(address indexed admin);
-    event ETHWithdrawn(address indexed to, uint256 amount);
 
     error NotMorpho();
     error FlashLoanNotInProgress();
@@ -128,7 +128,11 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     /// @inheritdoc IMorphoFlashLoanCallback
     /// @dev Called by Morpho mid-`flashLoan`. At this point the contract already
     ///      holds `assets` of the flash-borrowed token.
-    function onMorphoFlashLoan(uint256 assets, bytes calldata data) external override nonReentrant {
+    ///      NOTE: This callback does NOT use nonReentrant because it is called
+    ///      from within executeArbitrage (which has nonReentrant). Adding it here
+    ///      would deadlock. Security is ensured by: (1) msg.sender == morpho,
+    ///      (2) flashLoanInProgress flag, (3) profit check at the end.
+    function onMorphoFlashLoan(uint256 assets, bytes calldata data) external override {
         if (msg.sender != address(morpho)) revert NotMorpho();
         if (!flashLoanInProgress) revert FlashLoanNotInProgress();
 
@@ -142,9 +146,6 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
         }
 
         uint256 balance = IERC20(asset).balanceOf(address(this));
-        // Morpho Blue flash loans currently charge zero fee, but we compare against
-        // `assets` explicitly (rather than assuming 0 fee) to stay correct even if
-        // that ever changes upstream.
         uint256 owed = assets;
         if (balance <= owed) {
             revert InsufficientProfit(owed + minProfit, balance);
@@ -155,11 +156,10 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
             revert InsufficientProfit(owed + minProfit, balance);
         }
 
-        // Repay the flash loan: Morpho pulls `assets` back via transferFrom-style
-        // accounting, so we approve it directly.
+        // Repay the flash loan
         IERC20(asset).forceApprove(address(morpho), owed);
 
-        // Sweep profit straight to whoever initiated this arbitrage.
+        // Sweep profit to initiator
         if (profit > 0) {
             IERC20(asset).safeTransfer(initiator, profit);
         }
@@ -167,8 +167,7 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
         emit ArbitrageExecuted(asset, assets, profit);
     }
 
-    /// @notice Rescue any tokens that end up stuck in this contract (e.g. dust from a
-    ///         partially-filled route, or a token sent here by mistake).
+    /// @notice Rescue any tokens that end up stuck in this contract.
     function withdrawToken(address token, address to, uint256 amount) external onlyRole(ADMIN_ROLE) nonReentrant {
         if (token == address(0)) revert ZeroAddress("token");
         if (to == address(0)) revert ZeroAddress("to");
