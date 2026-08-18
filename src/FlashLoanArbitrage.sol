@@ -31,10 +31,7 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     IMorpho public immutable morpho;
     bool private flashLoanInProgress;
 
-    /// @notice Legacy target-level whitelist, retained for administration visibility.
     mapping(address => bool) public isTargetWhitelisted;
-
-    /// @notice Exact target + function-selector allowlist for executable calls.
     mapping(address => mapping(bytes4 => bool)) public isCallWhitelisted;
 
     uint256 public constant MAX_CALLS = 20;
@@ -65,7 +62,6 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
         if (initialAdmin == address(0)) revert ZeroAddress("initialAdmin");
 
         morpho = IMorpho(morphoAddress);
-
         _grantRole(DEFAULT_ADMIN_ROLE, initialAdmin);
         _grantRole(ADMIN_ROLE, initialAdmin);
         _grantRole(OPERATOR_ROLE, initialAdmin);
@@ -87,8 +83,6 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
             _validateCall(calls[i].target, calls[i].data);
         }
 
-        // Snapshot the balance before the flash loan. Only balance gained during this
-        // invocation can satisfy the profit requirement.
         uint256 balanceBefore = IERC20(asset).balanceOf(address(this));
         bytes memory data = abi.encode(asset, calls, minProfit, msg.sender, balanceBefore);
 
@@ -106,24 +100,19 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
 
         for (uint256 i = 0; i < calls.length; i++) {
             _validateCall(calls[i].target, calls[i].data);
-
             (bool success, bytes memory ret) = calls[i].target.call{value: calls[i].value}(calls[i].data);
             if (!success) revert CallFailed(i, ret);
         }
 
         uint256 balanceAfter = IERC20(asset).balanceOf(address(this));
         uint256 requiredBalance = balanceBefore + assets + minProfit;
-        if (balanceAfter < requiredBalance) {
-            revert InsufficientProfit(requiredBalance, balanceAfter);
-        }
+        if (balanceAfter < requiredBalance) revert InsufficientProfit(requiredBalance, balanceAfter);
 
         uint256 profit = balanceAfter - balanceBefore - assets;
 
-        // Repay Morpho exactly. Clear route approvals afterwards so a successful
-        // transaction never leaves an operator-selected spender with a persistent
-        // allowance over contract funds.
-        IERC20(asset).forceApprove(address(morpho), assets);
+        // Remove route allowances first; then install only the exact Morpho repayment allowance.
         _clearRouteApprovals(calls);
+        IERC20(asset).forceApprove(address(morpho), assets);
         IERC20(asset).safeTransfer(initiator, profit);
 
         emit ArbitrageExecuted(asset, assets, profit);
@@ -163,7 +152,6 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
         }
     }
 
-    /// @notice Allow an exact function selector on a whitelisted target.
     function addCallSelectorToWhitelist(address target, bytes4 selector) external onlyRole(ADMIN_ROLE) {
         if (target == address(0)) revert ZeroAddress("target");
         if (!isTargetWhitelisted[target]) revert InvalidTarget(target);
@@ -197,16 +185,9 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
 
     function _validateCall(address target, bytes memory data) internal view {
         bytes4 selector = _selector(data);
+        if (!isTargetWhitelisted[target]) revert InvalidTarget(target);
+        if (!isCallWhitelisted[target][selector]) revert InvalidSelector(target, selector);
 
-        if (!isTargetWhitelisted[target]) {
-            revert InvalidTarget(target);
-        }
-        if (!isCallWhitelisted[target][selector]) {
-            revert InvalidSelector(target, selector);
-        }
-
-        // approve() can otherwise grant an arbitrary address a persistent allowance.
-        // Only approved execution targets may receive allowances from the contract.
         if (selector == IERC20.approve.selector) {
             if (data.length < 68) revert InvalidSelector(target, selector);
             (address spender,) = abi.decode(_withoutSelector(data), (address, uint256));
@@ -214,10 +195,7 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
             return;
         }
 
-        // A swap must return proceeds to this contract. Otherwise an operator key
-        // compromise could redirect the entire swap output to an external address.
         if (selector == IAerodromeRouter.swapExactTokensForTokens.selector) {
-            if (data.length < 4) revert InvalidSelector(target, selector);
             (, , , address recipient,) = abi.decode(
                 _withoutSelector(data),
                 (uint256, uint256, IAerodromeRouter.Route[], address, uint256)
@@ -227,7 +205,6 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
         }
 
         if (selector == IUniswapV3Router.exactInputSingle.selector) {
-            if (data.length < 4) revert InvalidSelector(target, selector);
             IUniswapV3Router.ExactInputSingleParams memory params =
                 abi.decode(_withoutSelector(data), (IUniswapV3Router.ExactInputSingleParams));
             if (params.recipient != address(this)) revert InvalidRecipient(params.recipient);
@@ -247,9 +224,7 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
         if (len < 4) return bytes("");
         result = new bytes(len - 4);
         assembly {
-            let src := add(data, 36)
-            let dst := add(result, 32)
-            mcopy(dst, src, sub(len, 4))
+            mcopy(add(result, 32), add(data, 36), sub(len, 4))
         }
     }
 
