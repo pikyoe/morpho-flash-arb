@@ -19,8 +19,8 @@ contract MockPriceFeed {
         return price;
     }
 
-    /// @dev Modern Chainlink AggregatorV3Interface — this is what Aave's
-    ///      oracle actually calls in current versions.
+    /// @dev Modern Chainlink AggregatorV3Interface — this is what Moonwell's
+     ///      ChainlinkOracle calls for price updates.
     function latestRoundData()
         external
         view

@@ -5,60 +5,74 @@ import {Script, console} from "forge-std/Script.sol";
 import {FlashLoanArbitrage} from "../src/FlashLoanArbitrage.sol";
 import {BaseAddresses} from "../src/BaseAddresses.sol";
 
-/// @notice Deploys FlashLoanArbitrage to Base with security-enhanced configuration.
-/// Usage:
-///   forge script script/Deploy.s.sol:Deploy \
-///     --rpc-url base \
-///     --broadcast \
-///     --verify \
-///     -vvvv
-/// Requires PRIVATE_KEY (deployer/admin) in your .env — see .env.example.
+/// @notice Forge deployment script for FlashLoanArbitrage on Base mainnet.
+///         Deploys the contract with the deployer as initial admin (all roles),
+///         then whitelists every target the Moonwell + Aerodrome route needs.
+/// @dev    Run:
+///         forge script script/Deploy.s.sol:Deploy \
+///           --rpc-url base \
+///           --broadcast \
+///           --verify \
+///           -vvvv
 contract Deploy is Script {
-    function run() external returns (FlashLoanArbitrage arb) {
+    function run() public {
         uint256 deployerKey = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(deployerKey);
 
+        console.log("Deployer:", deployer);
+        console.log("Morpho Blue:", BaseAddresses.MORPHO_BLUE);
+
         vm.startBroadcast(deployerKey);
 
-        // Deploy with enhanced security features
-        arb = new FlashLoanArbitrage(BaseAddresses.MORPHO_BLUE, deployer);
+        // 1. Deploy with deployer as initial admin (receives all roles)
+        FlashLoanArbitrage arb = new FlashLoanArbitrage(
+            BaseAddresses.MORPHO_BLUE,
+            deployer
+        );
+        console.log("FlashLoanArbitrage deployed at:", address(arb));
 
-        // Setup initial whitelist of trusted target contracts for the Moonwell
-        // liquidation route (see README "Moonwell liquidation"):
-        //  - the debt mToken (liquidateBorrow is called on it),
-        //  - the debt + collateral UNDERLYING tokens (approve calls),
-        //  - the DEX routers (the swap).
-        // NOTE: for the OEV path also whitelist the ChainlinkOEVWrapper and the
-        // collateral mToken (redeem call). Any extra collateral asset the bot
-        // liquidates must be whitelisted too (the route approves that token
-        // before the DEX swap) — add more via addTargetToWhitelist after deploying.
-        address[] memory initialTargets = new address[](9);
-        initialTargets[0] = BaseAddresses.MOONWELL_M_USDC;
-        initialTargets[1] = BaseAddresses.MOONWELL_M_WETH;
-        initialTargets[2] = BaseAddresses.AERODROME_ROUTER;
-        initialTargets[3] = BaseAddresses.UNISWAP_V3_SWAP_ROUTER02;
-        initialTargets[4] = BaseAddresses.WETH;
-        initialTargets[5] = BaseAddresses.USDC;
-        initialTargets[6] = BaseAddresses.CBETH;
-        initialTargets[7] = BaseAddresses.WSTETH;
-        initialTargets[8] = BaseAddresses.CBBTC;
-        
-        arb.batchAddTargetsToWhitelist(initialTargets);
+        // 2. Whitelist all targets needed for the standard Moonwell liquidation route
+        address[] memory targets = new address[](8);
+        uint256 i = 0;
+
+        // --- Moonwell mToken markets (debt + collateral) ---
+        targets[i++] = BaseAddresses.MOONWELL_M_USDC;
+        targets[i++] = BaseAddresses.MOONWELL_M_WETH;
+        targets[i++] = BaseAddresses.MOONWELL_M_CBETH;
+        targets[i++] = BaseAddresses.MOONWELL_M_WSTETH;
+        targets[i++] = BaseAddresses.MOONWELL_M_AERO;
+        targets[i++] = BaseAddresses.MOONWELL_M_CBBTC;
+
+        // --- DEX routers ---
+        targets[i++] = BaseAddresses.AERODROME_ROUTER;
+        targets[i++] = BaseAddresses.UNISWAP_V3_SWAP_ROUTER02;
+
+        arb.batchAddTargetsToWhitelist(targets);
+
+        // 3. Whitelist token contracts (needed for approve calls in the route)
+        address[] memory tokens = new address[](6);
+        tokens[0] = BaseAddresses.USDC;
+        tokens[1] = BaseAddresses.WETH;
+        tokens[2] = BaseAddresses.CBETH;
+        tokens[3] = BaseAddresses.WSTETH;
+        tokens[4] = BaseAddresses.CBBTC;
+        tokens[5] = BaseAddresses.AERO;
+
+        arb.batchAddTargetsToWhitelist(tokens);
+
+        // 4. Whitelist the OEV wrapper (for the competitive OEV path)
+        arb.addTargetToWhitelist(BaseAddresses.MOONWELL_OEV_WRAPPER_WETH);
 
         vm.stopBroadcast();
 
-        console.log("FlashLoanArbitrage deployed at:", address(arb));
-        console.log("Admin:", deployer);
-        console.log("Morpho Blue:", BaseAddresses.MORPHO_BLUE);
-        console.log("Initial targets whitelisted:", initialTargets.length);
-        console.log("Moonwell Comptroller:", BaseAddresses.MOONWELL_COMPTROLLER);
-        console.log("Moonwell mUSDC/mWETH markets:", BaseAddresses.MOONWELL_M_USDC, "/", BaseAddresses.MOONWELL_M_WETH);
-        
-        console.log("\nIMPORTANT SECURITY NOTES:");
-        console.log("- Admin has all roles (ADMIN, OPERATOR, PAUSER)");
-        console.log("- Consider granting OPERATOR_ROLE to a separate bot address");
-        console.log("- Consider granting PAUSER_ROLE to a separate emergency address");
-        console.log("- Only whitelisted contracts can be called in arbitrage routes");
-        console.log("- Contract is initially unpaused; use pause() for emergency stops");
+        console.log("--- Deployment Complete ---");
+        console.log("Contract:", address(arb));
+        console.log("Admin/Operator/Pauser:", deployer);
+        console.log("Whitelisted targets:", 8 + 6 + 1);
+        console.log("");
+        console.log("Next steps:");
+        console.log("1. Run SetupRoles.s.sol to separate OPERATOR/PAUSER to dedicated wallets");
+        console.log("2. Set ARBITRAGE_CONTRACT_ADDRESS in bot/.env");
+        console.log("3. Keep LIVE_EXECUTION=false until dry-run looks correct");
     }
 }

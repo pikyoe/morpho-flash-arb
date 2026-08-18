@@ -5,7 +5,7 @@
  * to enhance arbitrage decision making.
  */
 
-import { FeatureEngineer, MLOperationalFeatures } from './features.js';
+import { FeatureEngineer } from './features.js';
 
 // --- Prediction Types ---
 
@@ -63,7 +63,7 @@ export interface MLOpportunityPrediction {
 
 interface MLModel {
   predict(features: number[]): number | number[];
-  predict_proba?(features: number[]): number[][];
+  predict_proba(features: number[]): number[][];
 }
 
 // --- Mock Model Implementation (Replace with actual model loading) ---
@@ -79,7 +79,7 @@ class MockModel implements MLModel {
     this.noise = noise;
   }
   
-  predict(features: number[]): number | number[] {
+  predict(_features: number[]): number | number[] {
     if (this.type === 'classification') {
       // Return class (0 or 1)
       const probability = this.baseValue + (Math.random() - 0.5) * this.noise;
@@ -90,7 +90,7 @@ class MockModel implements MLModel {
     }
   }
   
-  predict_proba(features: number[]): number[][] {
+  predict_proba(_features: number[]): number[][] {
     if (this.type !== 'classification') {
       throw new Error('predict_proba only available for classification models');
     }
@@ -174,11 +174,11 @@ export class PredictionService {
     );
     
     // Make prediction
-    const prediction = this.liquidationModel.predict_proba(featureVector)[0];
-    const probability = prediction[1]; // Probability of class 1 (liquidation)
+    const prediction = this.liquidationModel.predict_proba(featureVector)[0] ?? [0, 0];
+    const probability = prediction[1] ?? 0; // Probability of class 1 (liquidation)
     
     // Calculate confidence based on prediction certainty
-    const confidence = Math.max(prediction[0], prediction[1]);
+    const confidence = Math.max(prediction[0] ?? 0, prediction[1] ?? 0);
     
     // Determine risk level
     let riskLevel: 'low' | 'medium' | 'high' | 'critical';
@@ -214,7 +214,7 @@ export class PredictionService {
   async predictProfitability(
     route: any,
     currentPrices: Map<string, number>,
-    marketConditions: any
+    _marketConditions: any
   ): Promise<ProfitabilityPrediction> {
     if (!this.modelsLoaded) {
       await this.loadModels();
@@ -280,7 +280,7 @@ export class PredictionService {
   /**
    * Predict competition intensity for a transaction
    */
-  async predictCompetition(mempoolData: any): Promise<CompetitionPrediction> {
+  async predictCompetition(_mempoolData: any): Promise<CompetitionPrediction> {
     if (!this.modelsLoaded) {
       await this.loadModels();
     }
@@ -296,8 +296,8 @@ export class PredictionService {
     );
     
     // Make prediction
-    const prediction = this.competitionModel.predict_proba(featureVector)[0];
-    const intensity = prediction[1]; // Probability of high competition
+    const prediction = this.competitionModel.predict_proba(featureVector)[0] ?? [0, 0];
+    const intensity = prediction[1] ?? 0; // Probability of high competition
     
     // Calculate derived metrics
     const expectedCompetitors = Math.floor(intensity * 10);
@@ -590,7 +590,7 @@ export class PredictionService {
   
   private generateRecommendation(
     overallScore: number,
-    liquidation: LiquidationPrediction,
+    _liquidation: LiquidationPrediction,
     profitability: ProfitabilityPrediction,
     competition: CompetitionPrediction
   ): 'execute' | 'skip' | 'wait' {

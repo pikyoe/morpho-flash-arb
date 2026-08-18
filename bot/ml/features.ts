@@ -154,8 +154,6 @@ export interface MLOperationalFeatures {
 
 export class FeatureEngineer {
   private provider: ethers.JsonRpcProvider;
-  private priceCache: Map<string, number[]> = new Map();
-  private volatilityCache: Map<string, number> = new Map();
   
   constructor(provider: ethers.JsonRpcProvider) {
     this.provider = provider;
@@ -280,7 +278,8 @@ export class FeatureEngineer {
     const gasPrice = Number(ethers.formatUnits(feeData.gasPrice || 0n, "gwei"));
     
     const block = await this.provider.getBlock("latest");
-    const blockTime = block ? block.timestamp - (await this.provider.getBlock(block.number - 1))?.timestamp || 0 : 0;
+    const previousBlock = block ? await this.provider.getBlock(block.number - 1) : null;
+    const blockTime = block ? block.timestamp - (previousBlock?.timestamp ?? block.timestamp) : 0;
     
     // Get historical gas prices for percentile calculation
     const gasPriceHistory = await this.getGasPriceHistory(24);
@@ -423,15 +422,16 @@ export class FeatureEngineer {
     
     const temporalFeatures = this.computeTemporalFeatures();
     
-    return {
+    const allFeatures = {
       positionFeatures,
       marketFeatures,
       networkFeatures,
       competitionFeatures,
       temporalFeatures,
-      toFeatureVector: function() {
-        return FeatureEngineer.flattenFeatures(this);
-      }
+    };
+    return {
+      ...allFeatures,
+      toFeatureVector: () => FeatureEngineer.flattenFeatures(allFeatures),
     };
   }
   
@@ -494,16 +494,17 @@ export class FeatureEngineer {
     const correlation: number[][] = [];
     
     for (let i = 0; i < n; i++) {
-      correlation[i] = [];
+      const row: number[] = [];
       for (let j = 0; j < n; j++) {
-        correlation[i][j] = i === j ? 1.0 : Math.random() * 0.8 - 0.4; // -0.4 to 0.4
+        row[j] = i === j ? 1.0 : Math.random() * 0.8 - 0.4; // -0.4 to 0.4
       }
+      correlation[i] = row;
     }
     
     return correlation;
   }
   
-  private async getPositionAge(userAddress: string): Promise<number> {
+  private async getPositionAge(_userAddress: string): Promise<number> {
     // In production, this would query first interaction timestamp
     // For now, return mock data
     return Math.random() * 720; // 0-720 hours
@@ -511,18 +512,21 @@ export class FeatureEngineer {
   
   private calculatePriceChange(prices: number[], hours: number): number {
     if (prices.length < hours + 1) return 0;
-    const currentPrice = prices[0];
-    const pastPrice = prices[hours];
+    const currentPrice = prices[0] ?? 0;
+    const pastPrice = prices[hours] ?? 0;
+    if (pastPrice === 0) return 0;
     return ((currentPrice - pastPrice) / pastPrice) * 100;
   }
   
   private calculateVolatility(prices: number[], hours: number): number {
     if (prices.length < hours + 1) return 0;
     const subset = prices.slice(0, hours + 1);
-    const returns = [];
+    const returns: number[] = [];
     
     for (let i = 1; i < subset.length; i++) {
-      returns.push((subset[i] - subset[i - 1]) / subset[i - 1]);
+      const current = subset[i] ?? 0;
+      const previous = subset[i - 1] ?? 0;
+      returns.push((current - previous) / previous);
     }
     
     const mean = returns.reduce((sum, r) => sum + r, 0) / returns.length;
@@ -581,64 +585,65 @@ export class FeatureEngineer {
   
   // --- Placeholder methods for external data sources ---
   
-  private async getLiquidityDepth(asset: string): Promise<number> {
+  private async getLiquidityDepth(_asset: string): Promise<number> {
     // Would integrate with DEX for real liquidity data
     return Math.random() * 1000000;
   }
   
-  private async getLiquidityChange(asset: string, hours: number): Promise<number> {
+  private async getLiquidityChange(_asset: string, _hours: number): Promise<number> {
     return (Math.random() - 0.5) * 20; // -10% to +10%
   }
   
-  private async getBidAskSpread(asset: string): Promise<number> {
+  private async getBidAskSpread(_asset: string): Promise<number> {
     return Math.random() * 0.01; // 0-1% spread
   }
   
-  private async estimateSlippage(asset: string, liquidity: number): Promise<number> {
+  private async estimateSlippage(_asset: string, _liquidity: number): Promise<number> {
     return Math.random() * 0.5; // 0-0.5% slippage
   }
   
-  private async getMarketCap(asset: string): Promise<number> {
+  private async getMarketCap(_asset: string): Promise<number> {
     return Math.random() * 1000000000000; // Up to $1T
   }
   
-  private async getTradingVolume(asset: string, hours: number): Promise<number> {
+  private async getTradingVolume(_asset: string, _hours: number): Promise<number> {
     return Math.random() * 1000000000; // Up to $1B
   }
   
-  private async getCorrelationWithBTC(asset: string): Promise<number> {
+  private async getCorrelationWithBTC(_asset: string): Promise<number> {
     return Math.random() * 0.8 - 0.4; // -0.4 to 0.4
   }
   
-  private async getCorrelationWithETH(asset: string): Promise<number> {
+  private async getCorrelationWithETH(_asset: string): Promise<number> {
     return Math.random() * 0.9 - 0.45; // -0.45 to 0.45
   }
   
-  private async calculateBeta(asset: string): Promise<number> {
+  private async calculateBeta(_asset: string): Promise<number> {
     return Math.random() * 2 - 0.5; // -0.5 to 1.5
   }
   
-  private async getOpenInterest(asset: string): Promise<number> {
+  private async getOpenInterest(_asset: string): Promise<number> {
     return Math.random() * 1000000000; // Up to $1B
   }
   
-  private async getFundingRate(asset: string): Promise<number> {
+  private async getFundingRate(_asset: string): Promise<number> {
     return (Math.random() - 0.5) * 0.01; // -0.5% to +0.5%
   }
   
-  private async getLongShortRatio(asset: string): Promise<number> {
+  private async getLongShortRatio(_asset: string): Promise<number> {
     return Math.random() * 2; // 0 to 2
   }
   
-  private async getGasPriceHistory(hours: number): Promise<number[]> {
+  private async getGasPriceHistory(_hours: number): Promise<number[]> {
     // Would fetch historical gas prices
-    return Array(hours).fill(0).map(() => Math.random() * 50 + 10);
+    return Array(_hours).fill(0).map(() => Math.random() * 50 + 10);
   }
   
   private calculateGasPriceChange(history: number[]): number {
     if (history.length < 2) return 0;
-    const current = history[0];
-    const previous = history[history.length - 1];
+    const current = history[0] ?? 0;
+    const previous = history[history.length - 1] ?? 0;
+    if (previous === 0) return 0;
     return ((current - previous) / previous) * 100;
   }
   
@@ -666,7 +671,7 @@ export class FeatureEngineer {
     return Math.floor(Math.random() * 20);
   }
   
-  private async getMEVBotActivity(hours: number): Promise<number> {
+  private async getMEVBotActivity(_hours: number): Promise<number> {
     return Math.random() * 1000;
   }
   
@@ -713,7 +718,7 @@ export class FeatureEngineer {
   /**
    * Flatten all features into a single vector for ML models
    */
-  static flattenFeatures(features: MLOperationalFeatures): number[] {
+  static flattenFeatures(features: Omit<MLOperationalFeatures, "toFeatureVector">): number[] {
     const vector: number[] = [];
     
     // Position features

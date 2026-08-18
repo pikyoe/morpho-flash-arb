@@ -6,32 +6,22 @@ import {StdCheats} from "forge-std/StdCheats.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {BaseAddresses} from "../src/BaseAddresses.sol";
 import {MockPriceFeed} from "../src/mocks/MockPriceFeed.sol";
+import {IMoonwellMarket} from "../src/interfaces/IMoonwellMarket.sol";
+import {IMoonwellComptroller} from "../src/interfaces/IMoonwellComptroller.sol";
 
-interface IAavePoolMinimal {
-    function supply(address asset, uint256 amount, address onBehalfOf, uint16 referralCode) external;
-    function borrow(address asset, uint256 amount, uint256 interestRateMode, uint16 referralCode, address onBehalfOf)
-        external;
-    function getUserAccountData(address user)
-        external
-        view
-        returns (
-            uint256 totalCollateralBase,
-            uint256 totalDebtBase,
-            uint256 availableBorrowsBase,
-            uint256 currentLiquidationThreshold,
-            uint256 ltv,
-            uint256 healthFactor
-        );
-}
-
-interface IAaveOracleMinimal {
+/// @notice Minimal Moonwell oracle interface for fork testing.
+///         Extracts only the functions the setup script needs.
+interface IMoonwellOracle {
+    /// @notice Returns the Chainlink feed address registered for `asset`.
     function getSourceOfAsset(address asset) external view returns (address);
+
+    /// @notice Returns the current price of `asset` in USD (8-decimal mantissa).
     function getAssetPrice(address asset) external view returns (uint256);
 }
 
 /// @notice LOCAL FORK TESTING ONLY. Constructs a real WETH-collateral /
-///         USDC-debt position for a throwaway test address, then crashes the
-///         WETH price feed on the local anvil node so the position becomes
+///         USDC-debt position on Moonwell (Base) for a throwaway test address,
+///         then crashes the WETH Chainlink price feed so the position becomes
 ///         liquidatable — giving watch.ts / checkPosition.ts something real
 ///         to find and act on, without touching mainnet or real funds.
 ///
@@ -53,33 +43,55 @@ contract SetupLiquidatablePosition is Script, StdCheats {
         vm.deal(testBorrower, 1 ether); // gas
         deal(BaseAddresses.WETH, testBorrower, SUPPLY_AMOUNT);
 
+        // --- Supply WETH as collateral to Moonwell mWETH ---
         vm.startBroadcast(TEST_BORROWER_KEY);
 
-        IERC20(BaseAddresses.WETH).approve(BaseAddresses.AAVE_V3_POOL, type(uint256).max);
-        IAavePoolMinimal(BaseAddresses.AAVE_V3_POOL).supply(BaseAddresses.WETH, SUPPLY_AMOUNT, testBorrower, 0);
+        IERC20(BaseAddresses.WETH).approve(BaseAddresses.MOONWELL_M_WETH, type(uint256).max);
+        // mWETH.supply(uint256) — supply underlying WETH
+        (uint256 supplyErr,) = IMoonwellMarket(BaseAddresses.MOONWELL_M_WETH).redeem(0);
+        // Actually mToken.supply() takes the underlying amount
+        // Moonwell uses the Compound V2 interface: mToken.mint(uint256) supplies underlying
+        // But our IMoonwellMarket only has liquidateBorrow/redeem/exchangeRateStored/etc.
+        // For the test script, we call the raw function via low-level call.
 
-        (,, uint256 availableBorrowsBase,,,) =
-            IAavePoolMinimal(BaseAddresses.AAVE_V3_POOL).getUserAccountData(testBorrower);
+        // mWETH.supply(supplyAmount) — not in our interface, use raw call
+        (bool supplyOk,) = BaseAddresses.MOONWELL_M_WETH.call(
+            abi.encodeWithSignature("mint(uint256)", SUPPLY_AMOUNT)
+        );
+        require(supplyOk, "mWETH.supply(mint) failed");
 
-        // availableBorrowsBase is USD with 8 decimals; USDC has 6 decimals
-        // and is ~$1 — so dividing by 100 converts scale, then take 95% of
-        // the max to borrow as close to the LTV ceiling as safely possible.
-        uint256 borrowUsdc = (availableBorrowsBase * 95) / 10_000;
+        console.log("Supplied", SUPPLY_AMOUNT, "WETH as collateral");
+
+        // Get max borrowable USDC
+        (, uint256 liquidity,,) = IMoonwellComptroller(BaseAddresses.MOONWELL_COMPTROLLER)
+            .getAccountLiquidity(testBorrower);
+        console.log("Available liquidity (USD, 18 dec):", liquidity);
+
+        // Borrow 95% of max to stay close to liquidation threshold
+        // liquidity is in 18-decimal USD; USDC is 6 decimals, ~$1
+        uint256 borrowUsdc = (liquidity * 95) / 10_000;
         console.log("Borrowing USDC (raw, 6 decimals):", borrowUsdc);
 
-        IAavePoolMinimal(BaseAddresses.AAVE_V3_POOL).borrow(BaseAddresses.USDC, borrowUsdc, 2, 0, testBorrower);
+        IERC20(BaseAddresses.USDC).approve(BaseAddresses.MOONWELL_M_USDC, type(uint256).max);
+        // mUSDC.borrow(borrowUsdc)
+        (bool borrowOk,) = BaseAddresses.MOONWELL_M_USDC.call(
+            abi.encodeWithSignature("borrow(uint256)", borrowUsdc)
+        );
+        require(borrowOk, "mUSDC.borrow failed");
 
         vm.stopBroadcast();
 
-        (,,,,, uint256 healthFactorBefore) =
-            IAavePoolMinimal(BaseAddresses.AAVE_V3_POOL).getUserAccountData(testBorrower);
-        console.log("Health factor after borrow:", healthFactorBefore);
+        // Check health before price crash
+        (, uint256 liqBefore, uint256 shortBefore) = IMoonwellComptroller(BaseAddresses.MOONWELL_COMPTROLLER)
+            .getAccountLiquidity(testBorrower);
+        console.log("Liquidity before crash:", liqBefore, "Shortfall:", shortBefore);
 
-        // --- Force health factor below 1.0 by crashing the WETH price feed ---
-        address wethFeed = IAaveOracleMinimal(BaseAddresses.AAVE_V3_ORACLE).getSourceOfAsset(BaseAddresses.WETH);
-        console.log("Real WETH price feed:", wethFeed);
+        // --- Crash WETH price to make position liquidatable ---
+        IMoonwellOracle oracle = IMoonwellOracle(BaseAddresses.MOONWELL_CHAINLINK_ORACLE);
+        address wethFeed = oracle.getSourceOfAsset(BaseAddresses.WETH);
+        console.log("Real WETH Chainlink feed:", wethFeed);
 
-        uint256 currentPrice = IAaveOracleMinimal(BaseAddresses.AAVE_V3_ORACLE).getAssetPrice(BaseAddresses.WETH);
+        uint256 currentPrice = oracle.getAssetPrice(BaseAddresses.WETH);
         console.log("Current WETH price (8 decimals):", currentPrice);
 
         int256 crashedPrice = int256((currentPrice * (10_000 - PRICE_CRASH_BPS)) / 10_000);
@@ -90,19 +102,20 @@ contract SetupLiquidatablePosition is Script, StdCheats {
         // slot 0 directly (MockPriceFeed's only state variable).
         vm.store(wethFeed, bytes32(uint256(0)), bytes32(uint256(crashedPrice)));
 
-        uint256 newPrice = IAaveOracleMinimal(BaseAddresses.AAVE_V3_ORACLE).getAssetPrice(BaseAddresses.WETH);
+        uint256 newPrice = oracle.getAssetPrice(BaseAddresses.WETH);
         console.log("New (crashed) WETH price:", newPrice);
 
-        (,,,,, uint256 healthFactorAfter) =
-            IAavePoolMinimal(BaseAddresses.AAVE_V3_POOL).getUserAccountData(testBorrower);
-        console.log("Health factor after price crash:", healthFactorAfter);
+        (, uint256 liqAfter, uint256 shortAfter) = IMoonwellComptroller(BaseAddresses.MOONWELL_COMPTROLLER)
+            .getAccountLiquidity(testBorrower);
+        console.log("Liquidity after crash:", liqAfter, "Shortfall:", shortAfter);
 
-        if (healthFactorAfter < 1e18) {
+        if (shortAfter > 0) {
             console.log("SUCCESS: position is now liquidatable.");
-            console.log("Test borrower address (use this in getPosition.ts / checkPosition.ts):");
+            console.log("Test borrower address:");
             console.log(testBorrower);
+            console.log("Debt: USDC, Collateral: WETH");
         } else {
-            console.log("Position still healthy - increase PRICE_CRASH_BPS or borrowed amount and re-run.");
+            console.log("Position still healthy — increase PRICE_CRASH_BPS or borrowed amount and re-run.");
         }
     }
 }
