@@ -25,6 +25,7 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     mapping(address => bool) public isTargetWhitelisted;
     mapping(address => mapping(bytes4 => bool)) public isCallWhitelisted;
     mapping(address => uint256) public minFlashLoanSize;
+    mapping(address => uint256) public maxFlashLoanSize;
 
     uint256 public constant MAX_CALLS = 20;
     uint256 public constant DEFAULT_MIN_FLASH_LOAN_SIZE = 1e6; // Fallback for assets without per-asset minimum. Admin MUST call setMinimumFlashLoanSize for 18-decimal tokens (e.g. 0.1e18 for WETH).
@@ -35,6 +36,7 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     event TargetWhitelisted(address indexed target, bool whitelisted);
     event CallSelectorWhitelisted(address indexed target, bytes4 indexed selector, bool whitelisted);
     event MinimumFlashLoanSizeUpdated(address indexed asset, uint256 minimumAmount);
+    event MaximumFlashLoanSizeUpdated(address indexed asset, uint256 maximumAmount);
     event ContractPaused(address indexed pauser);
     event ContractUnpaused(address indexed admin);
 
@@ -62,6 +64,8 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
         uint256 minimum = minFlashLoanSize[asset];
         if (minimum == 0) minimum = DEFAULT_MIN_FLASH_LOAN_SIZE;
         if (amount < minimum) revert InvalidAmount(amount);
+        uint256 maximum = maxFlashLoanSize[asset];
+        if (maximum != 0 && amount > maximum) revert InvalidAmount(amount);
         if (calls.length == 0 || calls.length > MAX_CALLS) revert InvalidCallsLength(calls.length);
         if (minProfit == 0) revert InvalidMinProfit(minProfit);
         for (uint256 i; i < calls.length; i++) _validateCall(calls[i].target, calls[i].data);
@@ -77,6 +81,11 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
         if (minimumAmount == 0) revert InvalidAmount(minimumAmount);
         minFlashLoanSize[asset] = minimumAmount;
         emit MinimumFlashLoanSizeUpdated(asset, minimumAmount);
+    }
+    function setMaximumFlashLoanSize(address asset, uint256 maximumAmount) external onlyRole(ADMIN_ROLE) {
+        if (asset == address(0)) revert ZeroAddress("asset");
+        maxFlashLoanSize[asset] = maximumAmount;
+        emit MaximumFlashLoanSizeUpdated(asset, maximumAmount);
     }
 
     function onMorphoFlashLoan(uint256 assets, bytes calldata data) external override {
@@ -130,6 +139,24 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     }
     function batchAddTargetsToWhitelist(address[] calldata targets) external onlyRole(ADMIN_ROLE) {
         for (uint256 i; i < targets.length; i++) if (targets[i] != address(0)) { isTargetWhitelisted[targets[i]] = true; emit TargetWhitelisted(targets[i], true); }
+    }
+    function batchRemoveTargetsFromWhitelist(address[] calldata targets) external onlyRole(ADMIN_ROLE) {
+        for (uint256 i; i < targets.length; i++) { isTargetWhitelisted[targets[i]] = false; emit TargetWhitelisted(targets[i], false); }
+    }
+    function batchRemoveCallSelectorsFromWhitelist(address target, bytes4[] calldata selectors) external onlyRole(ADMIN_ROLE) {
+        for (uint256 i; i < selectors.length; i++) { isCallWhitelisted[target][selectors[i]] = false; emit CallSelectorWhitelisted(target, selectors[i], false); }
+    }
+    /// @notice Emergency: removes multiple targets + their selectors in one tx.
+    function clearTargetWhitelists(address[] calldata targets, bytes4[][] calldata selectorSets) external onlyRole(ADMIN_ROLE) {
+        require(targets.length == selectorSets.length, "length mismatch");
+        for (uint256 i; i < targets.length; i++) {
+            isTargetWhitelisted[targets[i]] = false;
+            emit TargetWhitelisted(targets[i], false);
+            for (uint256 j; j < selectorSets[i].length; j++) {
+                isCallWhitelisted[targets[i]][selectorSets[i][j]] = false;
+                emit CallSelectorWhitelisted(targets[i], selectorSets[i][j], false);
+            }
+        }
     }
     function addCallSelectorToWhitelist(address target, bytes4 selector) external onlyRole(ADMIN_ROLE) {
         if (target == address(0)) revert ZeroAddress("target"); if (!isTargetWhitelisted[target]) revert InvalidTarget(target);
