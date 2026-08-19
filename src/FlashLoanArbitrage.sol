@@ -27,7 +27,7 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     mapping(address => uint256) public minFlashLoanSize;
 
     uint256 public constant MAX_CALLS = 20;
-    uint256 public constant DEFAULT_MIN_FLASH_LOAN_SIZE = 1e6;
+    uint256 public constant DEFAULT_MIN_FLASH_LOAN_SIZE = 1e6; // Fallback for assets without per-asset minimum. Admin MUST call setMinimumFlashLoanSize for 18-decimal tokens (e.g. 0.1e18 for WETH).
 
     event ArbitrageExecuted(address indexed asset, uint256 amountBorrowed, uint256 profit);
     event ProfitWithdrawn(address indexed asset, address indexed to, uint256 amount);
@@ -43,7 +43,7 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     error InvalidTarget(address target); error InvalidSelector(address target, bytes4 selector);
     error InvalidRecipient(address recipient); error InvalidAmount(uint256 amount);
     error InvalidCallsLength(uint256 length); error InvalidMinProfit(uint256 minProfit);
-    error ZeroAddress(string param);
+    error ZeroAddress(string param); error ETHTransferFailed();
 
     constructor(address morphoAddress, address initialAdmin) {
         if (morphoAddress == address(0)) revert ZeroAddress("morphoAddress");
@@ -106,7 +106,8 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     }
     function withdrawETH(address payable to, uint256 amount) external onlyRole(ADMIN_ROLE) nonReentrant {
         if (to == address(0)) revert ZeroAddress("to");
-        (bool success,) = to.call{value: amount}(""); require(success, "ETH transfer failed");
+        (bool success,) = to.call{value: amount}("");
+        if (!success) revert ETHTransferFailed();
         emit ETHWithdrawn(to, amount);
     }
     function addTargetToWhitelist(address target) external onlyRole(ADMIN_ROLE) {
@@ -114,6 +115,18 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     }
     function removeTargetFromWhitelist(address target) external onlyRole(ADMIN_ROLE) {
         isTargetWhitelisted[target] = false; emit TargetWhitelisted(target, false);
+    }
+
+    /// @notice Removes a target AND its known selectors from the whitelist in one tx.
+    ///         Preferred over removeTargetFromWhitelist when you know which selectors
+    ///         were whitelisted -- prevents stale isCallWhitelisted entries.
+    function removeTargetAndSelectorsFromWhitelist(address target, bytes4[] calldata selectors) external onlyRole(ADMIN_ROLE) {
+        isTargetWhitelisted[target] = false;
+        for (uint256 i; i < selectors.length; i++) {
+            isCallWhitelisted[target][selectors[i]] = false;
+            emit CallSelectorWhitelisted(target, selectors[i], false);
+        }
+        emit TargetWhitelisted(target, false);
     }
     function batchAddTargetsToWhitelist(address[] calldata targets) external onlyRole(ADMIN_ROLE) {
         for (uint256 i; i < targets.length; i++) if (targets[i] != address(0)) { isTargetWhitelisted[targets[i]] = true; emit TargetWhitelisted(targets[i], true); }
