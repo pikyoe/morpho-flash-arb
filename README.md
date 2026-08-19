@@ -49,11 +49,31 @@ unprofitable route costs you nothing but gas — the whole transaction reverts.
 
 This contract includes comprehensive security hardening to protect against common attack vectors:
 
-### Role-Based Access Control (RBAC)
-- **ADMIN_ROLE**: Full administrative access (withdraw, manage roles, whitelist)
-- **OPERATOR_ROLE**: Can execute arbitrage operations only
-- **PAUSER_ROLE**: Can pause/unpause the contract for emergency response
-- **DEFAULT_ADMIN_ROLE**: Can grant/revoke all roles
+### Role-Based Access Control (RBAC) — 2-Key Architecture
+
+The contract is designed for **minimum 2 separate keys** for production:
+
+| Role | Key Type | Can Do | Cannot Do |
+|------|----------|--------|----------|
+| **ADMIN_ROLE** | Cold wallet (hardware/multisig) | Whitelist, set limits, withdraw, grant/revoke roles | Execute arbitrage (revoked after SetupRoles) |
+| **OPERATOR_ROLE** | Hot wallet (bot machine) | Execute arbitrage only | Pause, withdraw, manage whitelist/roles |
+| **PAUSER_ROLE** | Separate hot wallet | Pause only | Unpause (admin only), execute, withdraw |
+| **DEFAULT_ADMIN_ROLE** | Cold wallet | Grant/revoke all roles | — |
+
+**Why 2 keys?** If the operator hot wallet is compromised (bot server hacked),
+the admin cold wallet can immediately `revokeRole(OPERATOR, compromisedAddr)`
+to kill the bot, then `pause()` to freeze everything. The attacker cannot
+withdraw funds or modify the whitelist. The admin key should **never** be
+used for day-to-day operations.
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  BEFORE SetupRoles:  Admin → ALL 4 ROLES               │
+│  AFTER SetupRoles:   Admin → DEFAULT_ADMIN + ADMIN only │
+│                      Operator → OPERATOR only           │
+│                      Pauser → PAUSER only               │
+└─────────────────────────────────────────────────────────┘
+```
 
 ### Pausable Functionality
 - Contract can be paused by anyone with PAUSER_ROLE
@@ -216,7 +236,14 @@ Copy the deployed address into `bot/.env`:
 echo "ARBITRAGE_CONTRACT_ADDRESS=0x..." >> bot/.env
 ```
 
-**IMPORTANT**: Ensure the bot uses a wallet with OPERATOR_ROLE, not ADMIN_ROLE.
+**IMPORTANT — KEY SEPARATION**:
+- The bot wallet must have **only OPERATOR_ROLE** (not ADMIN_ROLE)
+- The admin wallet (deployer) retains **DEFAULT_ADMIN_ROLE + ADMIN_ROLE**
+- This means if the bot server is hacked, the attacker can only execute
+  arbitrage — they cannot pause, withdraw, or modify the whitelist
+- The admin can instantly revoke the operator role to kill the bot
+- Store the admin key in a **hardware wallet** or **multisig** — never on a
+  server that runs the bot
 
 ## Running the off-chain bot
 
@@ -423,7 +450,7 @@ Before deploying with real funds:
 | `BASE_RPC_URL` | `https://mainnet.base.org` | Base mainnet RPC |
 | `MOONWELL_SUBGRAPH_URL` | — | Moonwell subgraph endpoint (e.g. Goldsky) for the cold borrower sweep |
 | `LIVE_EXECUTION` | `false` | `true` sends real transactions; otherwise dry-run |
-| `PRIVATE_KEY` | — | Operator wallet (needs OPERATOR_ROLE on the contract) — required when `LIVE_EXECUTION=true` |
+| `PRIVATE_KEY` | — | **Operator** wallet (needs OPERATOR_ROLE only, NOT admin) — required when `LIVE_EXECUTION=true` |
 | `ARBITRAGE_CONTRACT_ADDRESS` | — | Deployed FlashLoanArbitrage; needed to build/execute real routes |
 | `MIN_PROFIT_USD` | `1` | Minimum estimated profit before executing |
 | `MIN_COLLATERAL_USD` | `100` | Skip candidates with less shortfall (USD) |
