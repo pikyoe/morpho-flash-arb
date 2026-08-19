@@ -28,6 +28,15 @@ interface IMoonwellMarket {
     /// @return 0 on success; a non-zero error code otherwise (Compound-style).
     function redeem(uint256 redeemTokens) external returns (uint256);
 
+    /// @notice Redeems underlying tokens by specifying the exact underlying amount.
+    ///         Unlike `redeem(uint256)` which takes mToken amounts, this takes the
+    ///         underlying amount directly — no need to manually compute the exchange
+    ///         rate. Preferred for OEV routes where the bot knows the underlying
+    ///         amount received from liquidation.
+    /// @param redeemAmount The exact amount of underlying tokens to redeem.
+    /// @return 0 on success; a non-zero error code otherwise (Compound-style).
+    function redeemUnderlying(uint256 redeemAmount) external returns (uint256);
+
     /// @notice The current exchange rate: 1 mToken = `exchangeRate / 1e18`
     ///         underlying (18-decimal mantissa). Grows as interest accrues.
     function exchangeRateStored() external view returns (uint256);

@@ -44,12 +44,7 @@ contract CallBuilderTest is Test {
         assertEq(call.value, 0);
 
         IAerodromeRouter.Route[] memory routes = new IAerodromeRouter.Route[](1);
-        routes[0] = IAerodromeRouter.Route({
-            from: tokenIn,
-            to: tokenOut,
-            stable: stable,
-            factory: poolFactory
-        });
+        routes[0] = IAerodromeRouter.Route({from: tokenIn, to: tokenOut, stable: stable, factory: poolFactory});
         assertEq(
             call.data,
             abi.encodeCall(
@@ -134,6 +129,99 @@ contract CallBuilderTest is Test {
         assertEq(call.value, 0);
         assertEq(call.data, abi.encodeCall(IMoonwellMarket.redeem, (redeemTokens)));
     }
+
+    // --- NEW: moonwellRedeemUnderlying ---
+
+    function test_moonwellRedeemUnderlying_encodesCorrectly() public pure {
+        address mToken = BaseAddresses.MOONWELL_M_WETH;
+        uint256 redeemAmount = 1_500e18; // 1.5 WETH
+
+        FlashLoanArbitrage.Call memory call = CallBuilder.moonwellRedeemUnderlying(mToken, redeemAmount);
+        assertEq(call.target, mToken);
+        assertEq(call.value, 0);
+        assertEq(call.data, abi.encodeCall(IMoonwellMarket.redeemUnderlying, (redeemAmount)));
+    }
+
+    // --- NEW: estimateMTokenFromUnderlying ---
+
+    function test_estimateMTokenFromUnderlying_basicCase() public pure {
+        // 1 mWETH = 1.02 WETH (exchange rate = 1.02e18)
+        uint256 underlyingAmount = 1_020e18;
+        uint256 exchangeRate = 1.02e18;
+
+        uint256 mTokens = CallBuilder.estimateMTokenFromUnderlying(underlyingAmount, exchangeRate);
+        // 1020 * 1e18 / 1.02e18 = 1000 mTokens
+        assertEq(mTokens, 1000e18);
+    }
+
+    function test_estimateMTokenFromUnderlying_oneToOne() public pure {
+        uint256 mTokens = CallBuilder.estimateMTokenFromUnderlying(5e18, 1e18);
+        assertEq(mTokens, 5e18);
+    }
+
+    function test_estimateMTokenFromUnderlying_highRate() public pure {
+        // 1 mToken = 2 underlying
+        uint256 mTokens = CallBuilder.estimateMTokenFromUnderlying(1e18, 2e18);
+        assertEq(mTokens, 0.5e18);
+    }
+
+    // --- NEW: moonwellOevRedeemAndApprove ---
+
+    function test_moonwellOevRedeemAndApprove_returns2Calls() public pure {
+        address mTokenCollateral = BaseAddresses.MOONWELL_M_WETH;
+        address collateralUnderlying = BaseAddresses.WETH;
+        uint256 redeemAmount = 1_500e18;
+        address dexRouter = BaseAddresses.AERODROME_ROUTER;
+
+        FlashLoanArbitrage.Call[] memory calls = CallBuilder.moonwellOevRedeemAndApprove(
+            mTokenCollateral, collateralUnderlying, redeemAmount, dexRouter
+        );
+
+        assertEq(calls.length, 2);
+
+        // First: redeemUnderlying on mToken
+        assertEq(calls[0].target, mTokenCollateral);
+        assertEq(calls[0].data, abi.encodeCall(IMoonwellMarket.redeemUnderlying, (redeemAmount)));
+
+        // Second: approve underlying to router
+        assertEq(calls[1].target, collateralUnderlying);
+        assertEq(calls[1].data, abi.encodeCall(IERC20.approve, (dexRouter, redeemAmount)));
+    }
+
+    // --- NEW: Full OEV route composition test ---
+
+    function test_fullOevRoute_composesCorrectly() public pure {
+        address debtUnderlying = BaseAddresses.USDC;
+        address collateralUnderlying = BaseAddresses.WETH;
+        address oevWrapper = BaseAddresses.MOONWELL_OEV_WRAPPER_WETH;
+        address mTokenDebt = BaseAddresses.MOONWELL_M_USDC;
+        address mTokenCollateral = BaseAddresses.MOONWELL_M_WETH;
+        address borrower = address(0x9999);
+        uint256 repayAmount = 5_000e6;
+        uint256 estimatedSeized = 1_500e18;
+        address dexRouter = BaseAddresses.AERODROME_ROUTER;
+
+        // Step 1: OEV liquidation leg (2 calls)
+        FlashLoanArbitrage.Call[] memory oevLeg = CallBuilder.moonwellOevLiquidationLeg(
+            debtUnderlying, oevWrapper, borrower, repayAmount, mTokenCollateral, mTokenDebt
+        );
+
+        // Step 2: Redeem + approve for DEX (2 calls)
+        FlashLoanArbitrage.Call[] memory redeemLeg = CallBuilder.moonwellOevRedeemAndApprove(
+            mTokenCollateral, collateralUnderlying, estimatedSeized, dexRouter
+        );
+
+        // Total: approve_debt + liquidate + redeem + approve_to_router = 4 calls
+        assertEq(oevLeg.length + redeemLeg.length, 4);
+
+        // Verify call flow order
+        assertEq(oevLeg[0].target, debtUnderlying);       // approve USDC to wrapper
+        assertEq(oevLeg[1].target, oevWrapper);            // wrapper.liquidate
+        assertEq(redeemLeg[0].target, mTokenCollateral);   // mWETH.redeemUnderlying
+        assertEq(redeemLeg[1].target, collateralUnderlying); // WETH.approve to router
+    }
+
+    // --- estimateMoonwellSeizedUnderlying ---
 
     function test_estimateMoonwellSeizedUnderlying_basicCase() public pure {
         uint256 repayAmount = 10_000e6;

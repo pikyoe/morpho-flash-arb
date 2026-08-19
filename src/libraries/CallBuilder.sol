@@ -50,10 +50,41 @@ library CallBuilder {
         });
     }
 
+    /// @notice Redeems `redeemTokens` mTokens for underlying. Use this when you
+    ///         know the exact mToken amount. For most OEV routes, prefer
+    ///         `moonwellRedeemUnderlying` which takes the underlying amount directly.
     function moonwellRedeem(address mToken, uint256 redeemTokens) internal pure returns (FlashLoanArbitrage.Call memory) {
         return FlashLoanArbitrage.Call({target: mToken, value: 0, data: abi.encodeCall(IMoonwellMarket.redeem, (redeemTokens))});
     }
 
+    /// @notice Redeems underlying tokens by specifying the exact underlying amount.
+    ///         Preferred after OEV liquidation: the bot knows the underlying amount
+    ///         from `estimateMoonwellSeizedUnderlying`, no manual exchange rate math needed.
+    function moonwellRedeemUnderlying(address mToken, uint256 redeemAmount) internal pure returns (FlashLoanArbitrage.Call memory) {
+        return FlashLoanArbitrage.Call({target: mToken, value: 0, data: abi.encodeCall(IMoonwellMarket.redeemUnderlying, (redeemAmount))});
+    }
+
+    /// @notice Converts underlying amount to mToken amount via exchange rate.
+    ///         Use when you have underlying (from `estimateMoonwellSeizedUnderlying`)
+    ///         but need to call `redeem(uint256)` instead of `redeemUnderlying(uint256)`.
+    function estimateMTokenFromUnderlying(uint256 underlyingAmount, uint256 exchangeRate)
+        internal pure returns (uint256 mTokenAmount)
+    {
+        mTokenAmount = Math.mulDiv(underlyingAmount, 1e18, exchangeRate);
+    }
+
+    /// @notice Builds OEV redeem + approve route: redeems underlying from mTokens,
+    ///         then approves the DEX router. Standard follow-up to `moonwellOevLiquidationLeg`.
+    function moonwellOevRedeemAndApprove(
+        address mTokenCollateral, address collateralUnderlying, uint256 redeemAmount, address router
+    ) internal pure returns (FlashLoanArbitrage.Call[] memory calls) {
+        calls = new FlashLoanArbitrage.Call[](2);
+        calls[0] = moonwellRedeemUnderlying(mTokenCollateral, redeemAmount);
+        calls[1] = approve(collateralUnderlying, router, redeemAmount);
+    }
+
+    /// @notice Estimates underlying collateral received from liquidation.
+    ///         Mirrors `Comptroller.liquidateCalculateSeizeTokens()` on-chain math.
     function estimateMoonwellSeizedUnderlying(
         uint256 repayAmount, uint256 priceBorrowed, uint256 priceCollateral,
         uint256 exchangeRateCollateral, uint256 liquidationIncentiveMantissa, uint256 protocolSeizeShareMantissa
