@@ -1,0 +1,95 @@
+name: Apply Moonwell settlement fix
+
+on:
+  push:
+    branches:
+      - fix/moonwell-liquidation-settlement
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !startsWith(github.event.head_commit.message, 'fix: redeem Moonwell collateral') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/moonwell-liquidation-settlement
+
+      - name: Patch liquidation settlement
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('src/FlashLoanArbitrage.sol')
+          s = p.read_text()
+
+          old = '''        for (uint256 i; i < calls.length; i++) {
+            _validateCall(calls[i].target, calls[i].value, calls[i].data);
+            (bool success, bytes memory ret) = calls[i].target.call{value: calls[i].value}(calls[i].data);
+            if (!success) revert CallFailed(i, ret);
+            _checkCompoundErrorCode(i, calls[i].data, ret);
+        }
+'''
+
+          new = '''        for (uint256 i; i < calls.length; i++) {
+            _validateCall(calls[i].target, calls[i].value, calls[i].data);
+
+            // Standard Moonwell liquidateBorrow() transfers the seized collateral
+            // as mTokens, not as the underlying ERC20. Record the collateral
+            // mToken balance before liquidation so we can redeem only the amount
+            // produced by this liquidation before the operator's swap call.
+            bytes4 selector = _selector(calls[i].data);
+            address collateralMarket;
+            uint256 collateralBalanceBefore;
+            if (selector == IMoonwellMarket.liquidateBorrow.selector) {
+                if (calls[i].data.length != 100) revert InvalidSelector(calls[i].target, selector);
+                (, , collateralMarket) = abi.decode(_withoutSelector(calls[i].data), (address, uint256, address));
+                if (!isTargetWhitelisted[collateralMarket]) revert InvalidTarget(collateralMarket);
+                collateralBalanceBefore = IERC20(collateralMarket).balanceOf(address(this));
+            }
+
+            (bool success, bytes memory ret) = calls[i].target.call{value: calls[i].value}(calls[i].data);
+            if (!success) revert CallFailed(i, ret);
+            _checkCompoundErrorCode(i, calls[i].data, ret);
+
+            if (selector == IMoonwellMarket.liquidateBorrow.selector) {
+                uint256 collateralBalanceAfter = IERC20(collateralMarket).balanceOf(address(this));
+                uint256 seizedMTokenAmount = collateralBalanceAfter - collateralBalanceBefore;
+                if (seizedMTokenAmount == 0) revert InvalidAmount(seizedMTokenAmount);
+
+                // Redeem the actual mTokens received by this liquidation. This
+                // converts the seized collateral into the underlying ERC20 that
+                // the following DEX swap expects.
+                bytes memory redeemData = abi.encodeWithSelector(
+                    IMoonwellMarket.redeem.selector,
+                    seizedMTokenAmount
+                );
+                (bool redeemSuccess, bytes memory redeemRet) = collateralMarket.call(redeemData);
+                if (!redeemSuccess) revert CallFailed(i, redeemRet);
+                _checkCompoundErrorCode(i, redeemData, redeemRet);
+            }
+        }
+'''
+
+          if old not in s:
+              raise SystemExit('expected liquidation callback block not found')
+          if 'seizedMTokenAmount' in s:
+              raise SystemExit('patch already applied')
+          p.write_text(s.replace(old, new, 1))
+
+      - name: Commit patch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/FlashLoanArbitrage.sol
+          git commit -m "fix: redeem Moonwell collateral mTokens before swap"
+          git push origin fix/moonwell-liquidation-settlement
+
+      - name: Remove patch workflow
+        shell: bash
+        run: |
+          git rm .github/workflows/apply-moonwell-settlement-fix.yml
+          git commit -m "chore: remove one-shot patch workflow"
+          git push origin fix/moonwell-liquidation-settlement
