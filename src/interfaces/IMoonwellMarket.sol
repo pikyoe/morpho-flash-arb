@@ -8,31 +8,28 @@ pragma solidity ^0.8.24;
 ///         Full interface: https://github.com/moonwell-fi/contracts-open-source
 interface IMoonwellMarket {
     /// @notice Liquidates an undercollateralized position. Called on the mToken of
-    ///         the DEBT asset. Pulls `repayAmount` (capped by the close factor and
-    ///         the borrower's borrow balance) of the debt underlying from the caller
-    ///         — approve this mToken first — then seizes the borrower's collateral in
-    ///         the `mTokenCollateral` market and transfers it to the caller as the
-    ///         UNDERLYING token, at a discount (the liquidation incentive net of the
-    ///         protocol's reserve share). This discount is the spread the bot
-    ///         arbitrages against DEX prices.
-    /// @return 0 on success; a non-zero error code otherwise (Compound-style).
-    ///         Unlike Aave, business-logic failures (e.g. "position not
-    ///         liquidatable") may return an error code instead of reverting —
-    ///         off-chain tooling should check the return value in simulation.
+    ///         the DEBT asset. Pulls `repayAmount` of the debt underlying from the
+    ///         caller (approve this mToken first), then seizes the borrower's
+    ///         collateral as mTokens and transfers those mTokens to the caller.
+    ///         The collateral mToken amount is determined by the Comptroller's
+    ///         liquidation incentive, collateral exchange rate and protocol seize
+    ///         share. A successful call returns Compound error code 0.
     function liquidateBorrow(address borrower, uint256 repayAmount, address mTokenCollateral)
         external
         returns (uint256);
 
     /// @notice Redeems `redeemTokens` mTokens for their underlying token.
-    ///         Needed after an OEV liquidation, which pays the liquidator in mTokens.
+    ///         Standard Moonwell liquidations deliver collateral as mTokens, so a
+    ///         standard liquidation route must redeem the mTokens before selling
+    ///         the collateral underlying on a DEX.
     /// @return 0 on success; a non-zero error code otherwise (Compound-style).
     function redeem(uint256 redeemTokens) external returns (uint256);
 
     /// @notice Redeems underlying tokens by specifying the exact underlying amount.
-    ///         Unlike `redeem(uint256)` which takes mToken amounts, this takes the
-    ///         underlying amount directly — no need to manually compute the exchange
-    ///         rate. Preferred for OEV routes where the bot knows the underlying
-    ///         amount received from liquidation.
+    ///         Useful when an OEV route has already determined the desired
+    ///         underlying amount. Standard liquidation routes should normally use
+    ///         redeem() with the actual mToken balance delta produced by the
+    ///         liquidation.
     /// @param redeemAmount The exact amount of underlying tokens to redeem.
     /// @return 0 on success; a non-zero error code otherwise (Compound-style).
     function redeemUnderlying(uint256 redeemAmount) external returns (uint256);
@@ -42,9 +39,8 @@ interface IMoonwellMarket {
     function exchangeRateStored() external view returns (uint256);
 
     /// @notice Share of gross seized collateral kept by the Moonwell protocol
-    ///         reserves (0.03e18 on Moonwell Base → the liquidator nets 7% of the
-    ///         10% liquidation incentive). Stored per-market on the mToken — the
-    ///         Comptroller does NOT expose it (verified on Base, Aug 2026).
+    ///         reserves. This value is read from the collateral mToken because it
+    ///         is a per-market parameter.
     function protocolSeizeShareMantissa() external view returns (uint256);
 
     /// @notice A borrower's borrow balance in underlying, without accruing interest.
