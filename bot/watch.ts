@@ -12,7 +12,7 @@
  *
  * Every liquidatable candidate is sized and executed through the shared
  * engine in executor.ts (Moonwell-exact math, slippage, simulation,
- * private submission, retries). Runs in DRY RUN mode unless
+ * trusted-endpoint submission, retries). Runs in DRY RUN mode unless
  * LIVE_EXECUTION=true is set.
  *
  * Usage:
@@ -166,9 +166,11 @@ async function main(): Promise<void> {
   if (executor.config.liveExecution) {
     log(`*** LIVE EXECUTION ENABLED *** wallet: ${executor.walletAddress} contract: ${executor.config.arbAddress}`);
     log(
-      executor.config.bloxrouteAuthHeader
-        ? "Private submission: bloXroute blxr_tx (Base-Mainnet) + public fallback"
-        : "Private submission: public mempool only (set BLOXROUTE_AUTH_HEADER for MEV protection)"
+      executor.config.privateOnly
+        ? "Submission: trusted endpoints only (PRIVATE_ONLY) — default RPC skipped"
+        : executor.config.bloxrouteAuthHeader
+          ? "Submission: bloXroute BDN relay (Base-Mainnet) + default RPC fallback"
+          : "Submission: default RPC only (set PRIVATE_RPC_URLS / BLOXROUTE_AUTH_HEADER for trusted endpoints, PRIVATE_ONLY=true to skip the fallback)"
     );
   } else {
     log("Running in DRY RUN mode. Set LIVE_EXECUTION=true to send real transactions.");

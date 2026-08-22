@@ -57,7 +57,7 @@ const ENV_CHECKLIST: Array<{
   {
     key: "BLOXROUTE_AUTH_HEADER",
     secret: true,
-    description: "Optional. bloXroute auth header for private Base tx submission (api.blxrbdn.com blxr_tx).",
+    description: "Optional. bloXroute auth header for low-latency Base tx relay (api.blxrbdn.com blxr_tx). Not a private-tx service — Base has none.",
   },
   {
     key: "SIMULATE_BEFORE_SEND",

@@ -30,10 +30,17 @@
  *     so a stale position (already liquidated by someone else) is never
  *     broadcast — no wasted gas, no front-run telegraph.
  *
- *  5. Private submission on Base via bloXroute blxr_tx
- *     (api.blxrbdn.com, blockchain_network: "Base-Mainnet" — verified in the
- *     bloXroute docs) when BLOXROUTE_AUTH_HEADER is set, plus generic private
- *     JSON-RPC endpoints via PRIVATE_RPC_URLS. Falls back to the public mempool.
+ *  5. Trusted-endpoint submission. Base has NO public mempool and no builder
+ *     market — a single Coinbase sequencer orders everything, and Flashbots
+ *     Protect / bundles / OFAs do not exist here. So "privacy" on Base means
+ *     exactly one thing: minimizing who sees the signed tx before the
+ *     sequencer does. Endpoints are tried in trust order: PRIVATE_RPC_URLS
+ *     first, then bloXroute's BDN relay (blxr_tx, api.blxrbdn.com,
+ *     blockchain_network "Base-Mainnet" — a LOW-LATENCY relay, not a privacy
+ *     service; bloXroute's actual private-tx endpoints are Ethereum/Polygon
+ *     only), then the configured BASE_RPC_URL. PRIVATE_ONLY=true drops the
+ *     last one. The real anti-extraction guarantees stay on-chain:
+ *     amountOutMin + the contract's minProfit check.
  *
  *  6. Retry + replace-by-fee: re-broadcast the signed tx if not confirmed, then
  *     re-sign with a higher fee (same nonce) so the mempool accepts a
@@ -131,7 +138,9 @@ async function sendJsonRpc(url: string, method: string, params: unknown[]): Prom
 }
 
 /**
- * Submit a raw tx to bloXroute's Base private submission endpoint.
+ * Submit a raw tx to bloXroute's Base relay (blxr_tx). This is a low-latency
+ * path to the sequencer, NOT a private-tx endpoint — bloXroute's private-tx
+ * service (blxr_private_tx) does not support Base.
  * See https://docs.bloxroute.com/base/submit-transactions/submit-transactions
  */
 async function sendBlxrTx(rawTx: string, authHeader: string): Promise<unknown> {
@@ -206,8 +215,9 @@ export function loadConfig(): ExecutorConfig {
     priorityFeeGwei: envNumber("PRIORITY_FEE_GWEI", 0.01),
     privateRpcUrls,
     bloxrouteAuthHeader: process.env.BLOXROUTE_AUTH_HEADER,
-    // PRIVATE_ONLY=true skips the public mempool entirely — but only when at
-    // least one private endpoint is configured, otherwise nothing would send.
+    // PRIVATE_ONLY=true sends only to trusted endpoints (PRIVATE_RPC_URLS /
+    // bloXroute) and skips the default RPC — but only when at least one
+    // trusted endpoint is configured, otherwise nothing would send.
     privateOnly:
       process.env.PRIVATE_ONLY === "true" &&
       (privateRpcUrls.length > 0 || process.env.BLOXROUTE_AUTH_HEADER !== undefined),
@@ -650,8 +660,9 @@ export class LiquidationExecutor {
   /**
    * Execute an opportunity. In dry-run mode this only logs. In live mode it:
    * checks circuit breaker/gas/ETH floor, estimates gas, simulates against
-   * pending state, signs, broadcasts (private then public), and waits with
-   * resend + replace-by-fee until TX_TIMEOUT_MS.
+   * pending state, signs, broadcasts (trusted endpoints first, default RPC
+   * last unless PRIVATE_ONLY), and waits with resend + replace-by-fee until
+   * TX_TIMEOUT_MS.
    */
   async execute(opp: Opportunity, opts?: { priorityFeeGwei?: number }): Promise<ExecuteResult> {
     if (!this.config.liveExecution) {
@@ -791,7 +802,7 @@ export class LiquidationExecutor {
     return { status: "timeout", txHash: hash, message: `not confirmed within ${this.config.txTimeoutMs}ms` };
   }
 
-  /** Send a signed tx to every configured endpoint (private first, public last). */
+  /** Send a signed tx to every configured endpoint (trusted first, default RPC last). */
   private async broadcast(rawTx: string): Promise<void> {
     const targets: Array<{ label: string; send: () => Promise<unknown> }> = [];
     for (const url of this.config.privateRpcUrls) {
@@ -800,8 +811,9 @@ export class LiquidationExecutor {
     if (this.config.bloxrouteAuthHeader) {
       targets.push({ label: "bloxroute", send: () => sendBlxrTx(rawTx, this.config.bloxrouteAuthHeader!) });
     }
-    // Public mempool is the fallback of last resort: it leaks the opportunity to
-    // copycats and sandwichers. PRIVATE_ONLY=true skips it entirely.
+    // The default (public) RPC is the fallback of last resort: its operator
+    // sees the tx before the sequencer and could copy the liquidation.
+    // PRIVATE_ONLY=true skips it entirely.
     if (!this.config.privateOnly) {
       targets.push({ label: "public", send: () => this.provider.broadcastTransaction(rawTx) });
     }

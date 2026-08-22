@@ -163,15 +163,15 @@ async function pollCycle(executor: LiquidationExecutor): Promise<void> {
     CONFIG.subgraphEnabled &&
     (coldCandidates.length === 0 || Date.now() - lastColdRefresh > CONFIG.candidateRefreshMs)
   ) {
-    const apiKey = process.env.MOONWELL_SUBGRAPH_URL;
-    if (!apiKey) {
+    const subgraphUrl = process.env.MOONWELL_SUBGRAPH_URL;
+    if (!subgraphUrl) {
       log("MOONWELL_SUBGRAPH_URL not set — subgraph sweep disabled (event discovery still active)");
       coldCandidates = [];
       lastColdRefresh = Date.now();
     } else {
       log(`Refreshing subgraph candidate list (limit=${CONFIG.scanLimit})...`);
       try {
-        coldCandidates = await fetchBorrowerCandidates(apiKey, CONFIG.scanLimit);
+        coldCandidates = await fetchBorrowerCandidates(subgraphUrl, CONFIG.scanLimit);
         lastColdRefresh = Date.now();
         log(`Got ${coldCandidates.length} subgraph candidates.`);
       } catch (err) {

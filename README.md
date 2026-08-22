@@ -134,7 +134,7 @@ test/
 bot/
   executor.ts                   # SHARED MAINNET EXECUTION ENGINE: exact Moonwell
                                  # (Compound V2) liquidation math, route quoting,
-                                 # simulation, private submission + retries.
+                                 # simulation, trusted-endpoint submission + retries.
                                  # watch.ts, ml-enhanced-watch.ts and
                                  # checkPosition.ts all execute through this file.
   checkPosition.ts              # manual CLI: checks a position, prices the DEX
@@ -443,9 +443,14 @@ Before deploying with real funds:
       `ARBITRAGE_CONTRACT_ADDRESS` and `MIN_PROFIT_USD`; keep
       `LIVE_EXECUTION=false` and `ML_ENABLED=false` (the ML layer currently
       uses mock models) until dry-run looks right.
-- [ ] **Wire the private submission path** (`BLOXROUTE_AUTH_HEADER`) — public-
-      mempool liquidations are routinely lost to professional searchers. Without
-      it the bot still works, just with a higher front-run risk.
+- [ ] **Wire trusted submission endpoints** (`PRIVATE_RPC_URLS` and/or
+      `BLOXROUTE_AUTH_HEADER`, optionally `PRIVATE_ONLY=true`). Note: Base has
+      no public mempool, no builder market, and no Flashbots Protect — a single
+      Coinbase sequencer orders everything, so there is no true private-tx
+      service on Base. bloXroute's `blxr_tx` here is a low-latency relay, not
+      MEV protection. Trusted endpoints limit who sees the signed tx before the
+      sequencer; the real anti-extraction guarantees are the on-chain
+      `amountOutMin` + `minProfit` checks.
 - [ ] **Keep contract balances at ~0**: profit is paid directly to the treasury
       every run, so the contract should hold nothing between executions. Any
       standing balance of a whitelisted token could be sold into the
@@ -475,8 +480,9 @@ Before deploying with real funds:
 | `TX_TIMEOUT_MS` | `90000` | Max time to wait for confirmation (with resend + RBF) |
 | `MAX_TX_RETRIES` | `2` | Resends before the replace-by-fee bump |
 | `PRIORITY_FEE_GWEI` | `0.01` | Priority fee when the RPC reports none |
-| `BLOXROUTE_AUTH_HEADER` | — | bloXroute auth header → private Base submission via `blxr_tx` |
-| `PRIVATE_RPC_URLS` | — | Comma-separated extra private JSON-RPC endpoints (`eth_sendRawTransaction`) |
+| `BLOXROUTE_AUTH_HEADER` | — | bloXroute auth header → low-latency Base relay via `blxr_tx` (not a private-tx service) |
+| `PRIVATE_RPC_URLS` | — | Comma-separated trusted JSON-RPC endpoints (`eth_sendRawTransaction`) |
+| `PRIVATE_ONLY` | `false` | Skip the default RPC fallback; send only to trusted endpoints (no-op unless one is configured) |
 | `POLL_INTERVAL_SEC` | `20` | Bot cycle interval |
 | `CANDIDATE_REFRESH_MIN` | `5` | Subgraph (cold) sweep interval |
 | `SCAN_LIMIT` | `300` | Max subgraph candidates per sweep |
@@ -490,10 +496,11 @@ Before deploying with real funds:
 
 - **Not audited.** Do not deploy with meaningful funds without a professional
   audit and extensive fork testing against realistic scenarios.
-- **MEV competition.** Profitable liquidations and price discrepancies are
-  contested by many bots and searchers; expect most naive attempts to lose
-  the race (or get front-run/sandwiched) unless you use a private
-  mempool/builder relationship.
+- **MEV competition.** Base has a single sequencer and no public mempool, so
+  classic mempool front-running/sandwiching does not apply — but profitable
+  liquidations are a latency race: competitors watch the public Flashblocks
+  preconfirmation stream and backrun within 200ms. Expect to lose races on
+  latency; there is no builder relationship to buy your way into (yet).
 - **Price/oracle risk.** The bot's profit estimate uses a live DEX quote at
   call time, but prices can move between quoting and execution — the
   on-chain `minProfit` check is your real safety net, not the off-chain
