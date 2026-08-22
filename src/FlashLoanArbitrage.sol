@@ -22,8 +22,6 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     struct Call { address target; uint256 value; bytes data; }
 
     IMorpho public immutable morpho;
-    /// @notice Receives all arbitrage profit. Admin-controlled so a compromised
-    ///         operator key cannot redirect profit; defaults to the initial admin.
     address public treasury;
     bool private flashLoanInProgress;
     mapping(address => bool) public isTargetWhitelisted;
@@ -100,12 +98,48 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
         if (!flashLoanInProgress) revert FlashLoanNotInProgress();
         (address asset, Call[] memory calls, uint256 minProfit, uint256 balanceBefore) =
             abi.decode(data, (address, Call[], uint256, uint256));
+
         for (uint256 i; i < calls.length; i++) {
             _validateCall(calls[i].target, calls[i].value, calls[i].data);
+
+            // Standard Moonwell Compound-V2 liquidation transfers the seized
+            // collateral to the liquidator as mTokens. The following swap,
+            // however, expects the underlying ERC20. Track the collateral
+            // market balance around liquidateBorrow so we redeem exactly the
+            // mTokens produced by this liquidation, and never pre-existing
+            // collateral held by this contract.
+            bytes4 selector = _selector(calls[i].data);
+            address collateralMarket;
+            uint256 collateralBalanceBefore;
+            if (selector == IMoonwellMarket.liquidateBorrow.selector) {
+                if (calls[i].data.length != 100) revert InvalidSelector(calls[i].target, selector);
+                (, , collateralMarket) = abi.decode(_withoutSelector(calls[i].data), (address, uint256, address));
+                if (!isTargetWhitelisted[collateralMarket]) revert InvalidTarget(collateralMarket);
+                if (!isCallWhitelisted[collateralMarket][IMoonwellMarket.redeem.selector]) {
+                    revert InvalidSelector(collateralMarket, IMoonwellMarket.redeem.selector);
+                }
+                collateralBalanceBefore = IERC20(collateralMarket).balanceOf(address(this));
+            }
+
             (bool success, bytes memory ret) = calls[i].target.call{value: calls[i].value}(calls[i].data);
             if (!success) revert CallFailed(i, ret);
             _checkCompoundErrorCode(i, calls[i].data, ret);
+
+            if (selector == IMoonwellMarket.liquidateBorrow.selector) {
+                uint256 collateralBalanceAfter = IERC20(collateralMarket).balanceOf(address(this));
+                uint256 seizedMTokenAmount = collateralBalanceAfter - collateralBalanceBefore;
+                if (seizedMTokenAmount == 0) revert InvalidAmount(seizedMTokenAmount);
+
+                bytes memory redeemData = abi.encodeWithSelector(
+                    IMoonwellMarket.redeem.selector,
+                    seizedMTokenAmount
+                );
+                (bool redeemSuccess, bytes memory redeemRet) = collateralMarket.call(redeemData);
+                if (!redeemSuccess) revert CallFailed(i, redeemRet);
+                _checkCompoundErrorCode(i, redeemData, redeemRet);
+            }
         }
+
         uint256 balanceAfter = IERC20(asset).balanceOf(address(this));
         uint256 requiredBalance = balanceBefore + assets + minProfit;
         if (balanceAfter < requiredBalance) revert InsufficientProfit(requiredBalance, balanceAfter);
@@ -116,8 +150,6 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
         emit ArbitrageExecuted(asset, assets, profit);
     }
 
-    /// @notice Updates the profit recipient. Admin-only so a compromised operator
-    ///         key cannot redirect future profit.
     function setTreasury(address newTreasury) external onlyRole(ADMIN_ROLE) {
         if (newTreasury == address(0)) revert ZeroAddress("treasury");
         emit TreasuryUpdated(treasury, newTreasury);
@@ -141,10 +173,6 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     function removeTargetFromWhitelist(address target) external onlyRole(ADMIN_ROLE) {
         isTargetWhitelisted[target] = false; emit TargetWhitelisted(target, false);
     }
-
-    /// @notice Removes a target AND its known selectors from the whitelist in one tx.
-    ///         Preferred over removeTargetFromWhitelist when you know which selectors
-    ///         were whitelisted -- prevents stale isCallWhitelisted entries.
     function removeTargetAndSelectorsFromWhitelist(address target, bytes4[] calldata selectors) external onlyRole(ADMIN_ROLE) {
         isTargetWhitelisted[target] = false;
         for (uint256 i; i < selectors.length; i++) {
@@ -166,7 +194,6 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     function batchRemoveCallSelectorsFromWhitelist(address target, bytes4[] calldata selectors) external onlyRole(ADMIN_ROLE) {
         for (uint256 i; i < selectors.length; i++) { isCallWhitelisted[target][selectors[i]] = false; emit CallSelectorWhitelisted(target, selectors[i], false); }
     }
-    /// @notice Emergency: removes multiple targets + their selectors in one tx.
     function clearTargetWhitelists(address[] calldata targets, bytes4[][] calldata selectorSets) external onlyRole(ADMIN_ROLE) {
         require(targets.length == selectorSets.length, "length mismatch");
         for (uint256 i; i < targets.length; i++) {
@@ -193,8 +220,6 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     function unpause() external onlyRole(ADMIN_ROLE) { _unpause(); emit ContractUnpaused(msg.sender); }
 
     function _validateCall(address target, uint256 value, bytes memory data) internal view {
-        // No route needs native ETH; forbidding value transfers prevents an operator
-        // from donating the contract's ETH balance (e.g. into a payable swap call).
         if (value != 0) revert NonZeroCallValue(value);
         bytes4 selector = _selector(data);
         if (!isTargetWhitelisted[target]) revert InvalidTarget(target);
@@ -218,9 +243,6 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
         }
     }
 
-    /// @dev Moonwell mTokens return Compound-style error codes instead of
-    ///      reverting on business-logic failures. Surface them as a revert so a
-    ///      failed liquidation is not misreported as InsufficientProfit.
     function _checkCompoundErrorCode(uint256 index, bytes memory data, bytes memory ret) internal pure {
         if (ret.length < 32) return;
         bytes4 selector = _selector(data);
