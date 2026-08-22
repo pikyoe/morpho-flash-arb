@@ -52,6 +52,7 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     error InvalidCallsLength(uint256 length); error InvalidMinProfit(uint256 minProfit);
     error ZeroAddress(string param); error ETHTransferFailed();
     error NonZeroCallValue(uint256 value); error ErrorCodeReturned(uint256 index, uint256 errorCode);
+    error ForbiddenSelector(address target, bytes4 selector);
 
     constructor(address morphoAddress, address initialAdmin) {
         if (morphoAddress == address(0)) revert ZeroAddress("morphoAddress");
@@ -180,6 +181,7 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     }
     function addCallSelectorToWhitelist(address target, bytes4 selector) external onlyRole(ADMIN_ROLE) {
         if (target == address(0)) revert ZeroAddress("target"); if (!isTargetWhitelisted[target]) revert InvalidTarget(target);
+        _checkSelectorAllowed(target, selector);
         isCallWhitelisted[target][selector] = true; emit CallSelectorWhitelisted(target, selector, true);
     }
     function removeCallSelectorFromWhitelist(address target, bytes4 selector) external onlyRole(ADMIN_ROLE) {
@@ -187,7 +189,19 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     }
     function batchAddCallSelectorsToWhitelist(address target, bytes4[] calldata selectors) external onlyRole(ADMIN_ROLE) {
         if (target == address(0)) revert ZeroAddress("target"); if (!isTargetWhitelisted[target]) revert InvalidTarget(target);
-        for (uint256 i; i < selectors.length; i++) { isCallWhitelisted[target][selectors[i]] = true; emit CallSelectorWhitelisted(target, selectors[i], true); }
+        for (uint256 i; i < selectors.length; i++) {
+            _checkSelectorAllowed(target, selectors[i]);
+            isCallWhitelisted[target][selectors[i]] = true; emit CallSelectorWhitelisted(target, selectors[i], true);
+        }
+    }
+
+    /// @dev ERC20 `transfer`/`transferFrom` can never be whitelisted: tokens are
+    ///      whitelisted targets (for `approve` in routes), so allowing either
+    ///      selector would let an operator drain the contract's idle balances.
+    function _checkSelectorAllowed(address target, bytes4 selector) internal pure {
+        if (selector == IERC20.transfer.selector || selector == IERC20.transferFrom.selector) {
+            revert ForbiddenSelector(target, selector);
+        }
     }
     function pause() external onlyRole(PAUSER_ROLE) { _pause(); emit ContractPaused(msg.sender); }
     function unpause() external onlyRole(ADMIN_ROLE) { _unpause(); emit ContractUnpaused(msg.sender); }

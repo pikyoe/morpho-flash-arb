@@ -138,6 +138,8 @@ export interface ExecutorConfig {
   priorityFeeGwei: number;
   privateRpcUrls: string[];
   bloxrouteAuthHeader: string | undefined;
+  /** When true, never broadcast to the public mempool (private endpoints only). */
+  privateOnly: boolean;
   arbAddress: string | undefined;
   privateKey: string | undefined;
 }

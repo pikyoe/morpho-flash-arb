@@ -98,6 +98,30 @@ contract SecurityHardeningTest is Test {
         arb.executeArbitrage(WETH, 1 ether, calls, 1);
     }
 
+    function test_AdminCannotWhitelistTransferSelector() public {
+        vm.expectRevert(abi.encodeWithSelector(FlashLoanArbitrage.ForbiddenSelector.selector, WETH, TRANSFER_SELECTOR));
+        arb.addCallSelectorToWhitelist(WETH, TRANSFER_SELECTOR);
+    }
+
+    function test_AdminCannotWhitelistTransferFromSelector() public {
+        bytes4 transferFromSelector = bytes4(keccak256("transferFrom(address,address,uint256)"));
+        vm.expectRevert(abi.encodeWithSelector(FlashLoanArbitrage.ForbiddenSelector.selector, WETH, transferFromSelector));
+        arb.addCallSelectorToWhitelist(WETH, transferFromSelector);
+    }
+
+    function test_AdminCannotBatchWhitelistTransferSelector() public {
+        bytes4[] memory selectors = new bytes4[](2);
+        selectors[0] = APPROVE_SELECTOR;
+        selectors[1] = TRANSFER_SELECTOR;
+        // USDC: whitelisted target with no selectors whitelisted yet (setUp only
+        // whitelists WETH.approve), so we can assert the batch is atomic.
+        address usdc = BaseAddresses.USDC;
+        vm.expectRevert(abi.encodeWithSelector(FlashLoanArbitrage.ForbiddenSelector.selector, usdc, TRANSFER_SELECTOR));
+        arb.batchAddCallSelectorsToWhitelist(usdc, selectors);
+        // The whole batch reverted — approve must not have been whitelisted.
+        assertFalse(arb.isCallWhitelisted(usdc, APPROVE_SELECTOR));
+    }
+
     function test_WhitelistedSelectorCanExecute() public {
         FlashLoanArbitrage.Call[] memory calls = new FlashLoanArbitrage.Call[](1);
         calls[0] = FlashLoanArbitrage.Call({target: WETH, value: 0, data: abi.encodeWithSelector(APPROVE_SELECTOR, BaseAddresses.AERODROME_ROUTER, 1 ether)});

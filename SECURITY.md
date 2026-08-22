@@ -48,6 +48,9 @@ To prevent arbitrary contract calls, the contract implements a whitelist system:
 - Admin can add/remove targets from whitelist
 - Batch operations for efficient whitelist management
 - Prevents calls to malicious contracts
+- `transfer`/`transferFrom` selectors can never be whitelisted
+  (`ForbiddenSelector`): tokens are whitelisted targets for `approve`, so
+  allowing either selector would let an operator drain idle balances
 
 #### Default Whitelisted Contracts
 - Moonwell mToken markets (mUSDC, mWETH, etc.)

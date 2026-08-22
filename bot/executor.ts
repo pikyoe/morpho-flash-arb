@@ -7,12 +7,13 @@
  * What makes this "mainnet-ready":
  *
  *  1. EXACT Moonwell (Compound V2-compatible) liquidation math. The mToken
- *     silently CAPS `repayAmount` at (closeFactor * userDebt) — 50% on Moonwell
- *     Base. If the bot flashes more debt than Moonwell actually pulls, the
- *     leftover flash-loan debt would eat the profit. We compute the exact
- *     amounts Moonwell will use (close factor, liquidation incentive and
- *     protocol seize share read from the Comptroller, real mToken collateral
- *     balance cap) and flash exactly what Moonwell pulls.
+ *     REVERTS with TOO_MUCH_REPAY if `repayAmount` exceeds (closeFactor *
+ *     userDebt) — 50% on Moonwell Base. If the bot flashes more debt than
+ *     Moonwell actually pulls, the leftover flash-loan debt would eat the
+ *     profit. We compute the exact amounts Moonwell will use (close factor,
+ *     liquidation incentive and protocol seize share read from the
+ *     Comptroller, real mToken collateral balance cap) and flash exactly what
+ *     Moonwell pulls.
  *
  *  2. Liquidation parameters read on-chain — no more guessing BPS. The
  *     Comptroller exposes closeFactorMantissa() (0.5e18) and liquidationIncentive-
@@ -205,6 +206,11 @@ export function loadConfig(): ExecutorConfig {
     priorityFeeGwei: envNumber("PRIORITY_FEE_GWEI", 0.01),
     privateRpcUrls,
     bloxrouteAuthHeader: process.env.BLOXROUTE_AUTH_HEADER,
+    // PRIVATE_ONLY=true skips the public mempool entirely — but only when at
+    // least one private endpoint is configured, otherwise nothing would send.
+    privateOnly:
+      process.env.PRIVATE_ONLY === "true" &&
+      (privateRpcUrls.length > 0 || process.env.BLOXROUTE_AUTH_HEADER !== undefined),
     arbAddress,
     privateKey,
   };
@@ -438,8 +444,8 @@ export class LiquidationExecutor {
     if (collateral.exchangeRate <= 0n) return null;
     if (this.liquidationIncentive < HF_ONE) return null; // incentive must be >= 100%
 
-    // Moonwell silently caps repayAmount at closeFactor * userDebt — cap BEFORE
-    // flashing, or the leftover flash-loan debt turns profit into loss.
+    // Moonwell reverts (TOO_MUCH_REPAY) above closeFactor * userDebt — cap
+    // BEFORE flashing, or the whole liquidation leg reverts.
     const maxLiquidatableDebt = (debt.amount * this.closeFactor) / HF_ONE;
     if (maxLiquidatableDebt < 1n) return null;
 
@@ -465,8 +471,11 @@ export class LiquidationExecutor {
     // mTokens match exactly (avoids the on-chain LIQUIDATE_SEIZE_TOO_MUCH revert).
     const market = new ethers.Contract(collateral.mToken, MOONWELL_MARKET_ABI, this.provider);
     const userMTokens = (await market.balanceOf!(user)) as bigint;
-    if (grossSeizeTokens > userMTokens) {
-      grossSeizeTokens = userMTokens;
+    // 1 wei headroom: on-chain seize uses the freshly-accrued exchange rate,
+    // which can exceed exchangeRateStored() if interest accrues before inclusion.
+    const seizeCap = userMTokens > 1n ? userMTokens - 1n : userMTokens;
+    if (grossSeizeTokens > seizeCap) {
+      grossSeizeTokens = seizeCap;
       const debtPulled = (grossSeizeTokens * collateralPrice * exchangeRate) / (debtPrice * this.liquidationIncentive);
       if (debtPulled < 1n) return null;
       debtToCover = debtPulled;
@@ -791,7 +800,11 @@ export class LiquidationExecutor {
     if (this.config.bloxrouteAuthHeader) {
       targets.push({ label: "bloxroute", send: () => sendBlxrTx(rawTx, this.config.bloxrouteAuthHeader!) });
     }
-    targets.push({ label: "public", send: () => this.provider.broadcastTransaction(rawTx) });
+    // Public mempool is the fallback of last resort: it leaks the opportunity to
+    // copycats and sandwichers. PRIVATE_ONLY=true skips it entirely.
+    if (!this.config.privateOnly) {
+      targets.push({ label: "public", send: () => this.provider.broadcastTransaction(rawTx) });
+    }
 
     for (const t of targets) {
       try {
