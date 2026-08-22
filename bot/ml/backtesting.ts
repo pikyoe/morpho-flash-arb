@@ -7,7 +7,6 @@
 
 import { ethers } from "ethers";
 import { PredictionService, MLOpportunityPrediction } from './prediction-service.js';
-import { FeatureEngineer } from './features.js';
 
 // --- Types ---
 
@@ -26,9 +25,9 @@ export interface HistoricalPosition {
   collateral: Array<{ asset: string; amount: bigint; symbol: string; decimals: number }>;
   debt: Array<{ asset: string; amount: bigint; symbol: string; decimals: number }>;
   healthFactor: bigint;
-  becameLiquidatable?: number; // timestamp when position became liquidatable
-  wasLiquidated?: boolean;
-  liquidationTimestamp?: number;
+  becameLiquidatable?: number | undefined; // timestamp when position became liquidatable
+  wasLiquidated?: boolean | undefined;
+  liquidationTimestamp?: number | undefined;
 }
 
 export interface MarketConditions {
@@ -49,11 +48,11 @@ export interface ArbitrageOpportunity {
   route: any;
   actualOutcome?: {
     executed: boolean;
-    profit?: number;
-    cost?: number;
-    success?: boolean;
-    timestamp?: number;
-  };
+    profit?: number | undefined;
+    cost?: number | undefined;
+    success?: boolean | undefined;
+    timestamp?: number | undefined;
+  } | undefined;
 }
 
 export interface BacktestConfig {
@@ -72,21 +71,21 @@ export interface BacktestConfig {
 export interface BacktestResult {
   timestamp: number;
   opportunity: ArbitrageOpportunity;
-  mlPrediction?: MLOpportunityPrediction;
+  mlPrediction?: MLOpportunityPrediction | undefined;
   decision: 'execute' | 'skip' | 'wait';
   actualOutcome?: {
     executed: boolean;
-    profit?: number;
-    cost?: number;
-    success?: boolean;
-  };
+    profit?: number | undefined;
+    cost?: number | undefined;
+    success?: boolean | undefined;
+  } | undefined;
   simulatedOutcome?: {
     wouldExecute: boolean;
     expectedProfit: number;
-    actualProfit?: number;
+    actualProfit?: number | undefined;
     gasCost: number;
     netProfit: number;
-  };
+  } | undefined;
 }
 
 export interface BacktestSummary {
@@ -121,12 +120,8 @@ export interface BacktestSummary {
 
 export class Backtester {
   private predictionService: PredictionService;
-  private featureEngineer: FeatureEngineer;
-  private provider: ethers.JsonRpcProvider;
-  
+
   constructor(provider: ethers.JsonRpcProvider) {
-    this.provider = provider;
-    this.featureEngineer = new FeatureEngineer(provider);
     this.predictionService = new PredictionService(provider);
   }
   
@@ -138,7 +133,6 @@ export class Backtester {
     
     // In production, this would load from a database or files
     // For now, generate sample historical data
-    const totalDuration = config.endDate - config.startDate;
     const interval = 3600000; // 1 hour intervals
     
     for (let timestamp = config.startDate; timestamp <= config.endDate; timestamp += interval) {
@@ -161,7 +155,7 @@ export class Backtester {
     for (let i = 0; i < numPositions; i++) {
       const healthFactor = BigInt(Math.floor(Math.random() * 2e18));
       const becameLiquidatable = Math.random() > 0.7 ? timestamp + Math.random() * 86400000 : undefined;
-      const wasLiquidated = becameLiquidatable && Math.random() > 0.5;
+      const wasLiquidated = becameLiquidatable !== undefined && Math.random() > 0.5;
       
       positions.push({
         userAddress: `0x${Math.random().toString(16).substring(2, 42)}`,
@@ -280,7 +274,7 @@ export class Backtester {
    */
   private createOpportunity(dataPoint: HistoricalDataPoint, position: HistoricalPosition): ArbitrageOpportunity {
     const debtAsset = position.debt[0];
-    const collateralAsset = position.collateral[0];
+    if (!debtAsset) throw new Error("position has no debt entry");
     
     return {
       timestamp: dataPoint.timestamp,
@@ -347,7 +341,6 @@ export class Backtester {
     const collateralPrice = opportunity.prices.get(opportunity.collateral[0].asset) || 1;
     
     const debtAmount = Number(opportunity.debt[0].amount) / 10 ** opportunity.debt[0].decimals;
-    const collateralAmount = Number(opportunity.collateral[0].amount) / 10 ** opportunity.collateral[0].decimals;
     
     const liquidationBonus = 0.05; // 5%
     const seizedCollateral = (debtAmount * debtPrice * liquidationBonus) / collateralPrice;
@@ -487,7 +480,7 @@ export class Backtester {
    */
   private calculateMaxDrawdown(cumulativeReturns: number[]): number {
     let maxDrawdown = 0;
-    let peak = cumulativeReturns[0];
+    let peak = cumulativeReturns[0] ?? 0;
     
     for (const value of cumulativeReturns) {
       if (value > peak) {

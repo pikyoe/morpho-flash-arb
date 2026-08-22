@@ -5,8 +5,6 @@
  * the model lifecycle to ensure continued effectiveness.
  */
 
-import { ethers } from "ethers";
-
 // --- Types ---
 
 export interface PredictionRecord {
@@ -272,7 +270,7 @@ export class PerformanceTracker {
   private calculateThroughput(predictions: PredictionRecord[]): number {
     if (predictions.length < 2) return 0;
     
-    const timeSpan = predictions[predictions.length - 1].timestamp - predictions[0].timestamp;
+    const timeSpan = predictions[predictions.length - 1]!.timestamp - predictions[0]!.timestamp;
     return predictions.length / (timeSpan / 1000); // predictions per second
   }
   
@@ -430,8 +428,8 @@ export class DriftDetector {
       };
     }
     
-    const latestMetric = recentMetrics[recentMetrics.length - 1];
-    const baselineMetric = recentMetrics[0];
+    const latestMetric = recentMetrics[recentMetrics.length - 1]!;
+    const baselineMetric = recentMetrics[0]!;
     
     // Compare performance degradation
     const accuracyChange = (latestMetric.accuracy || 0) - (baselineMetric.accuracy || 0);
@@ -490,8 +488,8 @@ export class DriftDetector {
     
     let klDiv = 0;
     for (let i = 0; i < pNorm.length; i++) {
-      if (pNorm[i] > 0 && qNorm[i] > 0) {
-        klDiv += pNorm[i] * Math.log(pNorm[i] / qNorm[i]);
+      if (pNorm[i]! > 0 && qNorm[i]! > 0) {
+        klDiv += pNorm[i]! * Math.log(pNorm[i]! / qNorm[i]!);
       }
     }
     

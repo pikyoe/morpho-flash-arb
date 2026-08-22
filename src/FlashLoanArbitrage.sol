@@ -10,6 +10,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {IMorpho, IMorphoFlashLoanCallback} from "./interfaces/IMorpho.sol";
 import {IAerodromeRouter} from "./interfaces/IAerodromeRouter.sol";
 import {IUniswapV3Router} from "./interfaces/IUniswapV3Router.sol";
+import {IMoonwellMarket} from "./interfaces/IMoonwellMarket.sol";
 
 contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -21,6 +22,9 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     struct Call { address target; uint256 value; bytes data; }
 
     IMorpho public immutable morpho;
+    /// @notice Receives all arbitrage profit. Admin-controlled so a compromised
+    ///         operator key cannot redirect profit; defaults to the initial admin.
+    address public treasury;
     bool private flashLoanInProgress;
     mapping(address => bool) public isTargetWhitelisted;
     mapping(address => mapping(bytes4 => bool)) public isCallWhitelisted;
@@ -37,6 +41,7 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     event CallSelectorWhitelisted(address indexed target, bytes4 indexed selector, bool whitelisted);
     event MinimumFlashLoanSizeUpdated(address indexed asset, uint256 minimumAmount);
     event MaximumFlashLoanSizeUpdated(address indexed asset, uint256 maximumAmount);
+    event TreasuryUpdated(address indexed previousTreasury, address indexed newTreasury);
     event ContractPaused(address indexed pauser);
     event ContractUnpaused(address indexed admin);
 
@@ -46,11 +51,13 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     error InvalidRecipient(address recipient); error InvalidAmount(uint256 amount);
     error InvalidCallsLength(uint256 length); error InvalidMinProfit(uint256 minProfit);
     error ZeroAddress(string param); error ETHTransferFailed();
+    error NonZeroCallValue(uint256 value); error ErrorCodeReturned(uint256 index, uint256 errorCode);
 
     constructor(address morphoAddress, address initialAdmin) {
         if (morphoAddress == address(0)) revert ZeroAddress("morphoAddress");
         if (initialAdmin == address(0)) revert ZeroAddress("initialAdmin");
         morpho = IMorpho(morphoAddress);
+        treasury = initialAdmin;
         _grantRole(DEFAULT_ADMIN_ROLE, initialAdmin);
         _grantRole(ADMIN_ROLE, initialAdmin);
         _grantRole(OPERATOR_ROLE, initialAdmin);
@@ -68,9 +75,9 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
         if (maximum != 0 && amount > maximum) revert InvalidAmount(amount);
         if (calls.length == 0 || calls.length > MAX_CALLS) revert InvalidCallsLength(calls.length);
         if (minProfit == 0) revert InvalidMinProfit(minProfit);
-        for (uint256 i; i < calls.length; i++) _validateCall(calls[i].target, calls[i].data);
+        for (uint256 i; i < calls.length; i++) _validateCall(calls[i].target, calls[i].value, calls[i].data);
         uint256 balanceBefore = IERC20(asset).balanceOf(address(this));
-        bytes memory data = abi.encode(asset, calls, minProfit, msg.sender, balanceBefore);
+        bytes memory data = abi.encode(asset, calls, minProfit, balanceBefore);
         flashLoanInProgress = true;
         morpho.flashLoan(asset, amount, data);
         flashLoanInProgress = false;
@@ -91,12 +98,13 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     function onMorphoFlashLoan(uint256 assets, bytes calldata data) external override {
         if (msg.sender != address(morpho)) revert NotMorpho();
         if (!flashLoanInProgress) revert FlashLoanNotInProgress();
-        (address asset, Call[] memory calls, uint256 minProfit, address initiator, uint256 balanceBefore) =
-            abi.decode(data, (address, Call[], uint256, address, uint256));
+        (address asset, Call[] memory calls, uint256 minProfit, uint256 balanceBefore) =
+            abi.decode(data, (address, Call[], uint256, uint256));
         for (uint256 i; i < calls.length; i++) {
-            _validateCall(calls[i].target, calls[i].data);
+            _validateCall(calls[i].target, calls[i].value, calls[i].data);
             (bool success, bytes memory ret) = calls[i].target.call{value: calls[i].value}(calls[i].data);
             if (!success) revert CallFailed(i, ret);
+            _checkCompoundErrorCode(i, calls[i].data, ret);
         }
         uint256 balanceAfter = IERC20(asset).balanceOf(address(this));
         uint256 requiredBalance = balanceBefore + assets + minProfit;
@@ -104,8 +112,16 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
         uint256 profit = balanceAfter - balanceBefore - assets;
         _clearRouteApprovals(calls);
         IERC20(asset).forceApprove(address(morpho), assets);
-        IERC20(asset).safeTransfer(initiator, profit);
+        if (profit > 0) IERC20(asset).safeTransfer(treasury, profit);
         emit ArbitrageExecuted(asset, assets, profit);
+    }
+
+    /// @notice Updates the profit recipient. Admin-only so a compromised operator
+    ///         key cannot redirect future profit.
+    function setTreasury(address newTreasury) external onlyRole(ADMIN_ROLE) {
+        if (newTreasury == address(0)) revert ZeroAddress("treasury");
+        emit TreasuryUpdated(treasury, newTreasury);
+        treasury = newTreasury;
     }
 
     function withdrawToken(address token, address to, uint256 amount) external onlyRole(ADMIN_ROLE) nonReentrant {
@@ -138,7 +154,11 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
         emit TargetWhitelisted(target, false);
     }
     function batchAddTargetsToWhitelist(address[] calldata targets) external onlyRole(ADMIN_ROLE) {
-        for (uint256 i; i < targets.length; i++) if (targets[i] != address(0)) { isTargetWhitelisted[targets[i]] = true; emit TargetWhitelisted(targets[i], true); }
+        for (uint256 i; i < targets.length; i++) {
+            if (targets[i] == address(0)) revert ZeroAddress("target");
+            isTargetWhitelisted[targets[i]] = true;
+            emit TargetWhitelisted(targets[i], true);
+        }
     }
     function batchRemoveTargetsFromWhitelist(address[] calldata targets) external onlyRole(ADMIN_ROLE) {
         for (uint256 i; i < targets.length; i++) { isTargetWhitelisted[targets[i]] = false; emit TargetWhitelisted(targets[i], false); }
@@ -172,7 +192,10 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
     function pause() external onlyRole(PAUSER_ROLE) { _pause(); emit ContractPaused(msg.sender); }
     function unpause() external onlyRole(ADMIN_ROLE) { _unpause(); emit ContractUnpaused(msg.sender); }
 
-    function _validateCall(address target, bytes memory data) internal view {
+    function _validateCall(address target, uint256 value, bytes memory data) internal view {
+        // No route needs native ETH; forbidding value transfers prevents an operator
+        // from donating the contract's ETH balance (e.g. into a payable swap call).
+        if (value != 0) revert NonZeroCallValue(value);
         bytes4 selector = _selector(data);
         if (!isTargetWhitelisted[target]) revert InvalidTarget(target);
         if (!isCallWhitelisted[target][selector]) revert InvalidSelector(target, selector);
@@ -192,6 +215,21 @@ contract FlashLoanArbitrage is IMorphoFlashLoanCallback, AccessControl, Pausable
             if (data.length != 228) revert InvalidSelector(target, selector);
             IUniswapV3Router.ExactInputSingleParams memory params = abi.decode(_withoutSelector(data), (IUniswapV3Router.ExactInputSingleParams));
             if (params.recipient != address(this)) revert InvalidRecipient(params.recipient);
+        }
+    }
+
+    /// @dev Moonwell mTokens return Compound-style error codes instead of
+    ///      reverting on business-logic failures. Surface them as a revert so a
+    ///      failed liquidation is not misreported as InsufficientProfit.
+    function _checkCompoundErrorCode(uint256 index, bytes memory data, bytes memory ret) internal pure {
+        if (ret.length < 32) return;
+        bytes4 selector = _selector(data);
+        if (
+            selector == IMoonwellMarket.liquidateBorrow.selector || selector == IMoonwellMarket.redeem.selector
+                || selector == IMoonwellMarket.redeemUnderlying.selector
+        ) {
+            uint256 code = abi.decode(ret, (uint256));
+            if (code != 0) revert ErrorCodeReturned(index, code);
         }
     }
 

@@ -109,18 +109,19 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     // Auto-pick: the largest positions by USD value.
+    // Note: getPrices keys the map by mToken address, not underlying asset.
     collateralEntry = position.collateral[0]!;
     debtEntry = position.debt[0]!;
     for (const c of position.collateral) {
-      const p = prices[c.asset] ?? 0n;
-      const cp = prices[collateralEntry.asset] ?? 0n;
+      const p = prices[c.mToken] ?? 0n;
+      const cp = prices[collateralEntry.mToken] ?? 0n;
       if ((c.amount * p) / 10n ** BigInt(c.decimals) > (collateralEntry.amount * cp) / 10n ** BigInt(collateralEntry.decimals)) {
         collateralEntry = c;
       }
     }
     for (const d of position.debt) {
-      const p = prices[d.asset] ?? 0n;
-      const dp = prices[debtEntry.asset] ?? 0n;
+      const p = prices[d.mToken] ?? 0n;
+      const dp = prices[debtEntry.mToken] ?? 0n;
       if ((d.amount * p) / 10n ** BigInt(d.decimals) > (debtEntry.amount * dp) / 10n ** BigInt(debtEntry.decimals)) {
         debtEntry = d;
       }

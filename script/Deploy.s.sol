@@ -2,8 +2,13 @@
 pragma solidity ^0.8.24;
 
 import {Script, console} from "forge-std/Script.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {FlashLoanArbitrage} from "../src/FlashLoanArbitrage.sol";
 import {BaseAddresses} from "../src/BaseAddresses.sol";
+import {IAerodromeRouter} from "../src/interfaces/IAerodromeRouter.sol";
+import {IUniswapV3Router} from "../src/interfaces/IUniswapV3Router.sol";
+import {IMoonwellMarket} from "../src/interfaces/IMoonwellMarket.sol";
+import {IMoonwellOevWrapper} from "../src/interfaces/IMoonwellOevWrapper.sol";
 
 /// @notice Forge deployment script for FlashLoanArbitrage on Base mainnet.
 ///         Deploys the contract with the deployer as initial admin (all roles),
@@ -79,7 +84,11 @@ contract Deploy is Script {
         // 4. Whitelist the OEV wrapper (for the competitive OEV path)
         arb.addTargetToWhitelist(BaseAddresses.MOONWELL_OEV_WRAPPER_WETH);
 
-        // 5. Configure per-asset min/max flash loan sizes from env vars
+        // 5. Whitelist the selectors the routes use. A target alone is not
+        //    enough — _validateCall requires (target, selector) pairs.
+        _whitelistSelectors(arb);
+
+        // 6. Configure per-asset min/max flash loan sizes from env vars
         _configureFlashLoanLimits(arb);
 
         vm.stopBroadcast();
@@ -87,6 +96,7 @@ contract Deploy is Script {
         console.log("--- Deployment Complete ---");
         console.log("Contract:", address(arb));
         console.log("Admin/Operator/Pauser:", deployer);
+        console.log("Treasury (profit recipient):", arb.treasury());
         console.log("Whitelisted targets:", uint256(8 + 6 + 1));
         console.log("");
         console.log("Next steps:");
@@ -95,30 +105,58 @@ contract Deploy is Script {
         console.log("3. Keep LIVE_EXECUTION=false until dry-run looks correct");
     }
 
-    /// @dev Reads MIN/MAX flash loan sizes from env vars and sets them on the contract.
-    ///      If an env var is not set, the asset is skipped (uses DEFAULT_MIN_FLASH_LOAN_SIZE).
+    /// @dev Whitelists every function selector the standard + OEV routes call.
+    function _whitelistSelectors(FlashLoanArbitrage arb) internal {
+        // ERC20.approve on every token that can be approved in a route.
+        address[6] memory tokens = [
+            BaseAddresses.USDC,
+            BaseAddresses.WETH,
+            BaseAddresses.CBETH,
+            BaseAddresses.WSTETH,
+            BaseAddresses.CBBTC,
+            BaseAddresses.AERO
+        ];
+        for (uint256 i; i < tokens.length; i++) {
+            arb.addCallSelectorToWhitelist(tokens[i], IERC20.approve.selector);
+        }
+
+        // Moonwell mTokens: liquidateBorrow + both redeem flavours.
+        address[6] memory mTokens = [
+            BaseAddresses.MOONWELL_M_USDC,
+            BaseAddresses.MOONWELL_M_WETH,
+            BaseAddresses.MOONWELL_M_CBETH,
+            BaseAddresses.MOONWELL_M_WSTETH,
+            BaseAddresses.MOONWELL_M_AERO,
+            BaseAddresses.MOONWELL_M_CBBTC
+        ];
+        for (uint256 i; i < mTokens.length; i++) {
+            arb.addCallSelectorToWhitelist(mTokens[i], IMoonwellMarket.liquidateBorrow.selector);
+            arb.addCallSelectorToWhitelist(mTokens[i], IMoonwellMarket.redeem.selector);
+            arb.addCallSelectorToWhitelist(mTokens[i], IMoonwellMarket.redeemUnderlying.selector);
+        }
+
+        // DEX swap legs.
+        arb.addCallSelectorToWhitelist(BaseAddresses.AERODROME_ROUTER, IAerodromeRouter.swapExactTokensForTokens.selector);
+        arb.addCallSelectorToWhitelist(BaseAddresses.UNISWAP_V3_SWAP_ROUTER02, IUniswapV3Router.exactInputSingle.selector);
+
+        // OEV wrapper.
+        arb.addCallSelectorToWhitelist(
+            BaseAddresses.MOONWELL_OEV_WRAPPER_WETH, IMoonwellOevWrapper.updatePriceEarlyAndLiquidate.selector
+        );
+    }
+
+    /// @dev Reads MIN/MAX env vars for an asset. If env var is set, calls the contract.
     function _configureFlashLoanLimits(FlashLoanArbitrage arb) internal {
-        // USDC (6 decimals)
-        _trySetMinMax(arb, BaseAddresses.USDC, "USDC", 6);
-
-        // WETH (18 decimals)
-        _trySetMinMax(arb, BaseAddresses.WETH, "WETH", 18);
-
-        // CBETH (18 decimals)
-        _trySetMinMax(arb, BaseAddresses.CBETH, "CBETH", 18);
-
-        // WSTETH (18 decimals)
-        _trySetMinMax(arb, BaseAddresses.WSTETH, "WSTETH", 18);
-
-        // CBBTC (8 decimals)
-        _trySetMinMax(arb, BaseAddresses.CBBTC, "CBBTC", 8);
-
-        // AERO (18 decimals)
-        _trySetMinMax(arb, BaseAddresses.AERO, "AERO", 18);
+        _trySetMinMax(arb, BaseAddresses.USDC, "USDC");
+        _trySetMinMax(arb, BaseAddresses.WETH, "WETH");
+        _trySetMinMax(arb, BaseAddresses.CBETH, "CBETH");
+        _trySetMinMax(arb, BaseAddresses.WSTETH, "WSTETH");
+        _trySetMinMax(arb, BaseAddresses.CBBTC, "CBBTC");
+        _trySetMinMax(arb, BaseAddresses.AERO, "AERO");
     }
 
     /// @dev Tries to read MIN/MAX env vars for an asset. If env var is set, calls the contract.
-    function _trySetMinMax(FlashLoanArbitrage arb, address asset, string memory symbol, uint8 decimals) internal {
+    function _trySetMinMax(FlashLoanArbitrage arb, address asset, string memory symbol) internal {
         string memory minEnv = string.concat("MIN_FLASH_LOAN_", symbol);
         string memory maxEnv = string.concat("MAX_FLASH_LOAN_", symbol);
 

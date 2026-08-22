@@ -739,19 +739,20 @@ export class LiquidationExecutor {
   ): Promise<ExecuteResult> {
     const deadline = Date.now() + this.config.txTimeoutMs;
     const sliceMs = Math.max(5000, Math.floor(this.config.txTimeoutMs / (this.config.maxTxRetries + 2)));
+    const pendingHashes = new Set<string>([hash]);
     let resends = 0;
     let bumped = false;
 
     await this.broadcast(rawTx);
     while (Date.now() < deadline) {
-      const receipt = await this.waitForReceipt(hash, Math.min(sliceMs, deadline - Date.now()));
-      if (receipt !== null) {
-        if (receipt.status === 1) {
+      const confirmed = await this.waitForReceipt([...pendingHashes], Math.min(sliceMs, deadline - Date.now()));
+      if (confirmed !== null) {
+        if (confirmed.receipt.status === 1) {
           this.consecutiveFailures = 0;
-          log(`[live] CONFIRMED in block ${receipt.blockNumber} (${hash})`);
-          return { status: "confirmed", txHash: hash, message: `confirmed in block ${receipt.blockNumber}` };
+          log(`[live] CONFIRMED in block ${confirmed.receipt.blockNumber} (${confirmed.hash})`);
+          return { status: "confirmed", txHash: confirmed.hash, message: `confirmed in block ${confirmed.receipt.blockNumber}` };
         }
-        return this.fail(`tx ${hash} confirmed but REVERTED on-chain (nonce ${nonce})`);
+        return this.fail(`tx ${confirmed.hash} confirmed but REVERTED on-chain (nonce ${nonce})`);
       }
       if (Date.now() >= deadline) break;
       if (!bumped && resends >= this.config.maxTxRetries) {
@@ -768,6 +769,8 @@ export class LiquidationExecutor {
         const bumpedHash = ethers.keccak256(bumpedRaw);
         log(`[live] RBF bump (nonce ${nonce}): maxFee ${ethers.formatUnits(newMaxFee, "gwei")} gwei, tx ${bumpedHash}`);
         await this.broadcast(bumpedRaw);
+        // Track both hashes — either the original or the bumped tx can confirm.
+        pendingHashes.add(bumpedHash);
         bumped = true;
       } else {
         // Re-send the original — it may have been dropped from the mempool.
@@ -801,14 +804,19 @@ export class LiquidationExecutor {
     }
   }
 
-  private async waitForReceipt(hash: string, timeoutMs: number): Promise<ethers.TransactionReceipt | null> {
+  private async waitForReceipt(
+    hashes: string[],
+    timeoutMs: number
+  ): Promise<{ hash: string; receipt: ethers.TransactionReceipt } | null> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      try {
-        const receipt = await this.provider.getTransactionReceipt(hash);
-        if (receipt !== null) return receipt;
-      } catch {
-        // transient RPC error — keep polling
+      for (const hash of hashes) {
+        try {
+          const receipt = await this.provider.getTransactionReceipt(hash);
+          if (receipt !== null) return { hash, receipt };
+        } catch {
+          // transient RPC error — keep polling
+        }
       }
       await sleep(Math.min(1500, Math.max(0, deadline - Date.now())));
     }

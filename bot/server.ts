@@ -2,14 +2,15 @@
 /**
  * Live preview dashboard for the Morpho flash-arb bot.
  *
- * Serves a small web UI on PORT (default 3000, bound to 0.0.0.0) that shows
+ * Serves a small web UI on PORT (default 3000, bound to HOST — default
+ * 127.0.0.1; set HOST=0.0.0.0 only behind an authenticating proxy) that shows
  * the ML-enhanced watch bot's live logs and an env-var checklist, while the
  * bot itself runs as a child process. The bot defaults to DRY RUN mode —
  * set LIVE_EXECUTION=true only when you know what you're doing.
  *
  * Usage:
  *   npm run preview
- *   PORT=8080 npm run preview
+ *   PORT=8080 HOST=0.0.0.0 npm run preview
  */
 import "dotenv/config";
 import { createServer } from "node:http";
@@ -20,7 +21,9 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 3000);
-const HOST = "0.0.0.0";
+// Default to localhost: the dashboard exposes bot state without auth, so only
+// bind publicly (HOST=0.0.0.0) when you have an authenticating proxy in front.
+const HOST = process.env.HOST ?? "127.0.0.1";
 const MAX_LOG_LINES = 500;
 
 const ENV_CHECKLIST: Array<{
@@ -30,10 +33,12 @@ const ENV_CHECKLIST: Array<{
 }> = [
   {
     key: "MOONWELL_SUBGRAPH_URL",
+    secret: true, // can embed a Graph/Goldsky API key
     description: "Optional. Moonwell subgraph endpoint (e.g. Goldsky) for the cold borrower sweep. Event discovery works without it.",
   },
   {
     key: "BASE_RPC_URL",
+    secret: true, // can embed an RPC provider API key
     description: "Base RPC URL. Defaults to https://mainnet.base.org (free, rate-limited).",
   },
   {

@@ -23,7 +23,7 @@ atomically inside one flash-borrowed transaction.
                       ┌─────────────────────────────────────────┐
                       │           FlashLoanArbitrage.sol          │
                       └─────────────────────────────────────────┘
-1. owner calls executeArbitrage(asset, amount, calls[], minProfit)
+1. operator calls executeArbitrage(asset, amount, calls[], minProfit)
    (asset = the DEBT token, e.g. USDC)
 2. contract calls Morpho.flashLoan(asset, amount, data)
 3. Morpho sends `amount` of `asset` to the contract, then calls back:
@@ -39,7 +39,7 @@ atomically inside one flash-borrowed transaction.
    (which also reverts the flash loan and the liquidation — fully atomic,
    you can never end up "stuck" mid-arbitrage)
 6. contract approves Morpho for `amount` (repayment) and sends the
-   remaining profit to the owner
+   remaining profit to the admin-controlled `treasury` address
 ```
 
 Because step 5 is enforced *before* any state changes are kept, a failed or
@@ -55,16 +55,17 @@ The contract is designed for **minimum 2 separate keys** for production:
 
 | Role | Key Type | Can Do | Cannot Do |
 |------|----------|--------|----------|
-| **ADMIN_ROLE** | Cold wallet (hardware/multisig) | Whitelist, set limits, withdraw, grant/revoke roles | Execute arbitrage (revoked after SetupRoles) |
-| **OPERATOR_ROLE** | Hot wallet (bot machine) | Execute arbitrage only | Pause, withdraw, manage whitelist/roles |
+| **ADMIN_ROLE** | Cold wallet (hardware/multisig) | Whitelist, set limits, set treasury, withdraw, grant/revoke roles | Execute arbitrage (revoked after SetupRoles) |
+| **OPERATOR_ROLE** | Hot wallet (bot machine) | Execute arbitrage only | Pause, withdraw, set treasury, manage whitelist/roles |
 | **PAUSER_ROLE** | Separate hot wallet | Pause only | Unpause (admin only), execute, withdraw |
 | **DEFAULT_ADMIN_ROLE** | Cold wallet | Grant/revoke all roles | — |
 
 **Why 2 keys?** If the operator hot wallet is compromised (bot server hacked),
 the admin cold wallet can immediately `revokeRole(OPERATOR, compromisedAddr)`
 to kill the bot, then `pause()` to freeze everything. The attacker cannot
-withdraw funds or modify the whitelist. The admin key should **never** be
-used for day-to-day operations.
+withdraw funds, redirect profit (it is paid to the admin-controlled
+`treasury`, set via `setTreasury`), or modify the whitelist. The admin key
+should **never** be used for day-to-day operations.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -146,7 +147,7 @@ bot/
   addresses.ts / abi.ts         # shared constants for the bot
   types.ts                      # TypeScript type definitions
 SECURITY.md                     # comprehensive security documentation
-.env.example
+env.example                     # env var template — cp env.example .env
 foundry.toml
 ```
 
@@ -163,7 +164,7 @@ foundry.toml
 git clone <this-repo>
 cd morpho-flash-arb
 forge install                     # pulls forge-std + OpenZeppelin (already vendored here)
-cp .env.EXAMPLE .env              # fill in PRIVATE_KEY, BASE_RPC_URL, etc.
+cp env.example .env               # fill in PRIVATE_KEY, BASE_RPC_URL, etc.
 
 cd bot && npm install && cd ..
 ```
@@ -173,8 +174,11 @@ cd bot && npm install && cd ..
 ```bash
 forge build
 
-# Fork tests hit real Morpho Blue + WETH on Base — set BASE_RPC_URL first.
-forge test --fork-url $BASE_RPC_URL -vvv
+# The fork suites create their own Base fork via vm.createSelectFork in
+# setUp() (BASE_RPC_URL env var, default https://mainnet.base.org) — do NOT
+# pass --fork-url on the CLI; a CLI fork + in-test fork breaks the fork
+# environment and makes tests revert spuriously.
+forge test -vvv
 
 # Pure unit tests (calldata encoding) need no network:
 forge test --match-contract CallBuilderTest -vvv
@@ -184,7 +188,7 @@ The fork tests don't run a real DEX swap (that requires live liquidity and is
 exactly the part your off-chain bot computes) — instead they simulate "the
 route was profitable" by dealing extra WETH to the contract before the
 callback runs, then assert the contract correctly repays Morpho and forwards
-only the *profit* portion to the owner. This isolates and verifies the
+only the *profit* portion to the treasury. This isolates and verifies the
 on-chain mechanics (flash loan, call execution, profit check, repayment)
 independent of any specific market conditions.
 
@@ -419,26 +423,34 @@ That means you can repurpose it for other routes without touching Solidity:
 This scaffold is not audited and liquidations on Base are heavily contested.
 Before deploying with real funds:
 
-- [ ] **Run the full fork test suite** (`forge test --fork-url $BASE_RPC_URL -vvv`)
-      and the `CallBuilderTest` unit tests; review `SECURITY.md`.
+- [ ] **Run the full test suite** (`forge test -vvv`; the fork suites fork
+      Base themselves via `BASE_RPC_URL`) and review `SECURITY.md`.
 - [ ] **Separate roles**: deploy with a burner admin key, then grant
       `OPERATOR_ROLE` to the bot's hot wallet and `PAUSER_ROLE` to an emergency
       address via `script/SetupRoles.s.sol`. Admin holds all roles initially.
+- [ ] **Set the treasury** (`setTreasury`) to a cold wallet or multisig if it
+      should differ from the deployer — all profit is paid there, never to the
+      operator wallet.
 - [ ] **Whitelist every collateral asset** you intend to liquidate
       (`addTargetToWhitelist`) — the route approves the collateral token before
       the DEX swap, so an un-whitelisted token makes the whole tx revert.
       For Moonwell also whitelist the debt mToken (and the OEV wrapper +
       collateral mToken if you use the OEV path) — see the whitelist table in
       the [Moonwell section](#moonwell-liquidation-primary-strategy).
-- [ ] **Set `GRAPH_API_KEY`**, `BASE_RPC_URL`, `ARBITRAGE_CONTRACT_ADDRESS` and
-      `MIN_PROFIT_USD`; keep `LIVE_EXECUTION=false` and `ML_ENABLED=false`
-      (the ML layer currently uses mock models) until dry-run looks right.
+      Deploy.s.sol already whitelists all targets and selectors for the
+      standard and OEV routes.
+- [ ] **Set `MOONWELL_SUBGRAPH_URL`** (optional), `BASE_RPC_URL`,
+      `ARBITRAGE_CONTRACT_ADDRESS` and `MIN_PROFIT_USD`; keep
+      `LIVE_EXECUTION=false` and `ML_ENABLED=false` (the ML layer currently
+      uses mock models) until dry-run looks right.
 - [ ] **Wire the private submission path** (`BLOXROUTE_AUTH_HEADER`) — public-
       mempool liquidations are routinely lost to professional searchers. Without
       it the bot still works, just with a higher front-run risk.
-- [ ] **Keep the operator key cold-ish**: an operator can craft routes that move
-      any *standing* whitelisted-token balance (e.g. approve+drain WETH), so the
-      contract should hold ~0 tokens outside flash-loan callbacks.
+- [ ] **Keep contract balances at ~0**: profit is paid directly to the treasury
+      every run, so the contract should hold nothing between executions. Any
+      standing balance of a whitelisted token could be sold into the
+      flash-loaned asset by the operator (it would land in the treasury, not
+      the operator's wallet — but it may execute at an unfavorable rate).
 - [ ] **Fund the operator wallet** with enough ETH for gas (`MIN_WALLET_ETH_BALANCE`,
       default 0.005 ETH) — the flash loan needs no upfront capital, but the gas
       for the transaction does.
@@ -471,6 +483,8 @@ Before deploying with real funds:
 | `EVENT_LOOKBACK_BLOCKS` | `300` | Blocks of `Borrow` events scanned every cycle (≈10 min on Base) |
 | `EVENT_DISCOVERY` / `SUBGRAPH_DISCOVERY` | `true` | Toggle each discovery source (mToken Borrow events / subgraph sweep) |
 | `ML_ENABLED` | `false` | Opt-in ML gate (models are mock — keep off for mainnet) |
+| `PORT` | `3000` | Preview dashboard port (`bot/server.ts`) |
+| `HOST` | `127.0.0.1` | Preview dashboard bind address — only set `0.0.0.0` behind an authenticating proxy (the dashboard is unauthenticated) |
 
 ## Risks & limitations
 

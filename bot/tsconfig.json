@@ -23,6 +23,6 @@
     "rootDir": ".",
     "noEmit": true
   },
-  "include": ["*.ts"],
+  "include": ["*.ts", "ml/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

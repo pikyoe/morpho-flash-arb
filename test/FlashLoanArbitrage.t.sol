@@ -19,12 +19,11 @@ contract FlashLoanArbitrageTest is Test {
     address constant USDC = BaseAddresses.USDC;
 
     function setUp() public {
-        vm.prank(admin);
+        vm.startPrank(admin);
         arb = new FlashLoanArbitrage(MORPHO, admin);
-        vm.prank(admin);
         arb.grantRole(arb.OPERATOR_ROLE(), operator);
-        vm.prank(admin);
         arb.grantRole(arb.PAUSER_ROLE(), pauser);
+        vm.stopPrank();
     }
 
     function test_constructor_setsRolesAndMorpho() public view {
@@ -78,14 +77,51 @@ contract FlashLoanArbitrageTest is Test {
         for (uint256 i = 0; i < targets.length; i++) assertTrue(arb.isTargetWhitelisted(targets[i]));
     }
 
-    function test_batchAddTargetsToWhitelist_skipsZeroAddress() public {
+    function test_batchAddTargetsToWhitelist_revertsOnZeroAddress() public {
         address[] memory targets = new address[](2);
         targets[0] = address(0);
         targets[1] = makeAddr("VALID");
         vm.prank(admin);
+        vm.expectRevert(abi.encodeWithSelector(FlashLoanArbitrage.ZeroAddress.selector, "target"));
         arb.batchAddTargetsToWhitelist(targets);
-        assertFalse(arb.isTargetWhitelisted(address(0)));
-        assertTrue(arb.isTargetWhitelisted(makeAddr("VALID")));
+    }
+
+    function test_constructor_setsTreasuryToAdmin() public view {
+        assertEq(arb.treasury(), admin);
+    }
+
+    function test_setTreasury() public {
+        address newTreasury = makeAddr("TREASURY");
+        vm.prank(admin);
+        vm.expectEmit(true, true, false, false);
+        emit FlashLoanArbitrage.TreasuryUpdated(admin, newTreasury);
+        arb.setTreasury(newTreasury);
+        assertEq(arb.treasury(), newTreasury);
+    }
+
+    function test_setTreasury_revertsForNonAdmin() public {
+        vm.prank(operator);
+        vm.expectRevert();
+        arb.setTreasury(makeAddr("TREASURY"));
+    }
+
+    function test_setTreasury_revertsOnZeroAddress() public {
+        vm.prank(admin);
+        vm.expectRevert(abi.encodeWithSelector(FlashLoanArbitrage.ZeroAddress.selector, "treasury"));
+        arb.setTreasury(address(0));
+    }
+
+    function test_executeArbitrage_revertsForNonZeroCallValue() public {
+        address target = makeAddr("TARGET");
+        vm.startPrank(admin);
+        arb.addTargetToWhitelist(target);
+        arb.addCallSelectorToWhitelist(target, bytes4(keccak256("someCall()")));
+        vm.stopPrank();
+        FlashLoanArbitrage.Call[] memory calls = new FlashLoanArbitrage.Call[](1);
+        calls[0] = FlashLoanArbitrage.Call({target: target, value: 1, data: abi.encodeWithSignature("someCall()")});
+        vm.prank(operator);
+        vm.expectRevert(abi.encodeWithSelector(FlashLoanArbitrage.NonZeroCallValue.selector, 1));
+        arb.executeArbitrage(USDC, 1e6, calls, 1);
     }
 
     function test_pause_onlyPauser() public {

@@ -93,6 +93,27 @@ The contract includes emergency response capabilities:
 - `removeTargetFromWhitelist()`: Remove target (ADMIN only)
 - `batchAddTargetsToWhitelist()`: Add multiple targets (ADMIN only)
 
+### 7. Treasury (Profit Recipient)
+
+All arbitrage profit is paid to the `treasury` address, never to the caller:
+
+- Defaults to the deployer; change with `setTreasury()` (ADMIN only)
+- A compromised OPERATOR key cannot redirect profit — the recipient is only
+  changeable by ADMIN_ROLE
+- The operator wallet accumulates nothing: it only pays gas for executions
+
+#### Call Value Restriction
+- `Call.value` must always be 0: no route needs native ETH, so value
+  transfers are rejected (`NonZeroCallValue`). This prevents an operator from
+  donating the contract's ETH balance (e.g. into a payable swap call).
+
+#### Compound Error Codes
+- Moonwell mTokens return Compound-style error codes instead of reverting;
+  `onMorphoFlashLoan` decodes the return value of `liquidateBorrow` /
+  `redeem` / `redeemUnderlying` and reverts with `ErrorCodeReturned` when a
+  call returns a non-zero code — surfacing the real failure instead of a
+  generic `InsufficientProfit`.
+
 ## Deployment Security
 
 ### Initial Deployment
@@ -145,14 +166,17 @@ The contract includes comprehensive security tests:
 ### Running Tests
 
 ```bash
-# Run all tests
-forge test --fork-url $BASE_RPC_URL -vvv
+# Run all tests. The fork suites fork Base themselves via
+# vm.createSelectFork (BASE_RPC_URL env var, default https://mainnet.base.org).
+# Do NOT pass --fork-url on the CLI — combining a CLI fork with the in-test
+# fork breaks the fork environment and makes tests revert spuriously.
+forge test -vvv
 
 # Run only security tests
-forge test --match-contract SecurityHardeningTest --fork-url $BASE_RPC_URL -vvv
+forge test --match-contract SecurityHardeningTest -vvv
 
 # Run with gas reporting
-forge test --fork-url $BASE_RPC_URL --gas-report
+forge test --gas-report
 ```
 
 ### Security Test Categories
