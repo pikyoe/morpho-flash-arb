@@ -1,5 +1,5 @@
 export const MOONWELL_COMPTROLLER_ABI: string[] = [
-  "function getAccountLiquidity(address account) view returns (uint256 error, uint256 liquidity, uint256 shortfall)",
+  "function getAccountLiquidity(address account) view returns (uint256 err, uint256 liquidity, uint256 shortfall)",
   "function closeFactorMantissa() view returns (uint256)",
   "function liquidationIncentiveMantissa() view returns (uint256)",
   "function oracle() view returns (address)",
